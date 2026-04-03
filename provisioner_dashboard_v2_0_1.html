@@ -666,9 +666,6 @@
     <div class="col-head" style="flex-shrink:0;">
       <div class="col-title">Provisioner Live View</div>
       <div style="display:flex;align-items:center;gap:8px;">
-        <div id="epoch-chip" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cyan);">epoch —</div>
-        <div id="epoch-countdown" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);">— blk</div>
-        <div id="live-dot" style="width:6px;height:6px;border-radius:50%;background:var(--dim);"></div>
       </div>
     </div>
 
@@ -725,6 +722,11 @@
         <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);">Rotation Automation</span>
         <span id="rot-state-badge" style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 7px;border-radius:3px;background:var(--bg3);border:1px solid var(--border);color:var(--dim);">idle</span>
         <span id="rot-status-msg" style="font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+        <!-- Maximize button -->
+        <button onclick="_rotMaximize()" title="Expand rotation log"
+          style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+                 background:var(--bg3);border:1px solid var(--border);border-radius:3px;
+                 color:var(--dim);cursor:pointer;flex-shrink:0;">⤢</button>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0;">
           <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--dim);">enable</span>
           <div id="rot-toggle-track" onclick="_rotToggle()"
@@ -737,9 +739,27 @@
         </label>
       </div>
       <div id="rot-log-body"
-           style="max-height:72px;overflow-y:auto;padding:0 14px 5px;
+           style="max-height:90px;overflow-y:auto;padding:0 14px 5px;
                   font-family:'IBM Plex Mono',monospace;font-size:8.5px;color:var(--dim);">
         <span style="color:var(--dim)">rotation not started</span>
+      </div>
+    </div>
+
+    <!-- Rotation log overlay (maximized view) -->
+    <div id="rot-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);
+                                  z-index:8000;flex-direction:column;">
+      <div style="padding:12px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:var(--bg2);">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--teal);">Rotation Automation Log</span>
+        <span id="rot-overlay-badge" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:2px 9px;border-radius:3px;background:var(--bg3);border:1px solid var(--border);color:var(--dim);">idle</span>
+        <span style="flex:1;"></span>
+        <button onclick="_rotMinimize()"
+          style="font-family:'IBM Plex Mono',monospace;font-size:10px;padding:3px 12px;
+                 background:var(--bg3);border:1px solid var(--border);border-radius:3px;
+                 color:var(--dim);cursor:pointer;">✕ close</button>
+      </div>
+      <div id="rot-overlay-log"
+           style="flex:1;overflow-y:auto;padding:14px 20px;
+                  font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.6;">
       </div>
     </div>
 
@@ -1375,9 +1395,22 @@ function renderNodeCard(idx, node, container, syncInfo, si) {
   const sym   = statusSymbol[rawStatus] || '○'
   const cls   = rawStatus in statusSymbol ? rawStatus : 'inactive'
 
-  // Status label with epoch context
-  const taMap = { active: '', maturing: ' · 1 epoch away', seeded: ' · 2 epochs away' }
-  const taSuffix = taMap[rawStatus] || ''
+  // Status label — use ta (transitions-to-active) from assess.py
+  // Compute ta from eligibility_epoch vs current epoch derived from block height
+  // epoch = Math.floor(height / 2160) + 1  (protocol is 1-indexed)
+  const eligEpochNum = si ? si.eligibility_epoch : null
+  const knownHeight = Math.max(0, ...Object.values(_nodeHeightCache).filter(h => h > 0), 0)
+  const curEpoch = knownHeight ? Math.floor(knownHeight / 2160) + 1 : null
+  const ta = (curEpoch != null && eligEpochNum != null)
+    ? Math.max(0, eligEpochNum - curEpoch)
+    : (node.ta != null ? node.ta : (si && si.ta != null ? si.ta : null))
+  const taSuffix = (rawStatus === 'active' || rawStatus === 'inactive') ? ''
+                 : ta === 0 ? ''
+                 : ta === 1 ? ' · 1 EPOCH AWAY'
+                 : ta === 2 ? ' · 2 EPOCHS AWAY'
+                 : ta != null ? ` · ${ta} EPOCHS AWAY`
+                 : rawStatus === 'seeded' ? ' · 2 EPOCHS AWAY'
+                 : ' · 1 EPOCH AWAY'
   const label = `${sym} ${rawStatus.toUpperCase()}${taSuffix}`
 
   const fmtLux = (lux, dp=4) => (lux != null && lux !== 0)
@@ -1459,9 +1492,6 @@ function renderAllProvCards() {
 
 
 function updateLivePanel(data) {
-  const epochChip = document.getElementById('epoch-chip')
-  const countdown = document.getElementById('epoch-countdown')
-  const dot       = document.getElementById('live-dot')
   if (data.epoch !== null && data.epoch !== undefined) {
     const blk       = data.blocks_until_transition
     const rotWin    = (_cfg && _cfg.rotation_window) ? parseInt(_cfg.rotation_window) : 41
@@ -1651,7 +1681,6 @@ async function fetchLivePanel() {
     d.sync = sync.nodes || {}
     updateLivePanel(d)
   } catch(e) {
-    const dot = document.getElementById('live-dot')
     if (dot) { dot.style.background = 'var(--red)'; dot.style.boxShadow = 'none' }
   }
 }
@@ -2081,7 +2110,9 @@ const _nodeHeightCache = {}   // idx → last known height
 async function _pollNodeHeights() {
   try {
     const heights = await fetch(`${API}/api/nodes/heights`).then(r => r.json())
+    let maxHeight = 0
     for (const [idxStr, height] of Object.entries(heights)) {
+      if (height && height > maxHeight) maxHeight = height  // track max regardless of change
       const idx = parseInt(idxStr)
       if (!height || height === _nodeHeightCache[idx]) continue
       _nodeHeightCache[idx] = height
@@ -2113,6 +2144,7 @@ async function _pollNodeHeights() {
         }
       }
     }
+    if (maxHeight) _updateBlkCounter(maxHeight)
   } catch(e) {}
 }
 
@@ -2167,7 +2199,8 @@ function _renderEpochMonitor(epoch, blkLeft, rotWin, snatchWin) {
 
   const blkEl = document.getElementById('em-blk-left')
   if (blkEl) {
-    blkEl.textContent = `${blkLeft.toLocaleString()} blk left`
+    // Format: N/2160 blk left — _updateBlkCounter writes this every 1s;
+    // here we only update color to match the current window
     blkEl.style.color = wc.color
   }
 
@@ -2204,19 +2237,34 @@ function _renderEpochMonitor(epoch, blkLeft, rotWin, snatchWin) {
   if (ns) ns.textContent = window === 'snatch' ? 'active' : fmtT(toSnatch)
 
   // Also update header chips
-  const epochChip  = document.getElementById('epoch-chip')
-  const countdown  = document.getElementById('epoch-countdown')
-  if (epochChip) epochChip.textContent = `epoch ${epoch}`
   if (countdown)  { countdown.textContent = `${blkLeft.toLocaleString()} blk`; countdown.style.color = wc.color }
 }
 
 // ── RUES block_accepted → force fetchLivePanel ────────────────────────────────
 let _lastBlockForRefresh = 0
+// ── Blk counter driven by exact local node heights ────────────────────────────
+// Node cards already update every 1s via _pollNodeHeights → /api/nodes/heights
+// Piggyback on that to keep the epoch countdown exact.
+let _blkAtLastUpdate = 0  // kept for _onRuesBlock compat
+
 function _onRuesBlock(height) {
-  if (height && height !== _lastBlockForRefresh) {
+  if (!height) return
+  _blkAtLastUpdate = height
+  if (height !== _lastBlockForRefresh) {
     _lastBlockForRefresh = height
     fetchLivePanel()
   }
+}
+
+function _updateBlkCounter(height) {
+  if (!height) return
+  const EPOCH_BLOCKS = 2160
+  const blk_in_epoch = height % EPOCH_BLOCKS  // blocks elapsed in this epoch
+  const blk_left = EPOCH_BLOCKS - blk_in_epoch
+
+  // Epoch monitor: show "N/2160 blk left"
+  const blkEl = document.getElementById('em-blk-left')
+  if (blkEl) blkEl.textContent = blk_left.toLocaleString() + '/' + EPOCH_BLOCKS + ' blk left'
 }
 
 
@@ -2729,20 +2777,35 @@ setInterval(_pollRues, 3000)
 // Initial call is inside loadConfig().then() to ensure _cfg is populated first
 
 function _showToggle(topic, showSet, setter) {
-  // show semantics: clicking a shown chip hides it; clicking hidden shows it
   const allTopics = _ALL_FILTER_TOPICS
+  const isHiddenByDefault = _DEFAULT_HIDDEN.has(topic)
+
   if (!showSet) {
-    // All shown — start explicit set: everything shown except this one
-    const s = new Set(allTopics.filter(t => !_DEFAULT_HIDDEN.has(t)))
-    s.delete(topic)
-    setter(s.size === allTopics.filter(t => !_DEFAULT_HIDDEN.has(t)).length ? null : s)
+    // Currently in "show-all-except-defaults" mode
+    if (isHiddenByDefault) {
+      // User wants to show a default-hidden topic — switch to explicit set that includes it
+      const s = new Set(allTopics.filter(t => !_DEFAULT_HIDDEN.has(t)))
+      s.add(topic)
+      setter(s)
+    } else {
+      // User wants to hide a normally-shown topic — switch to explicit set without it
+      const s = new Set(allTopics.filter(t => !_DEFAULT_HIDDEN.has(t)))
+      s.delete(topic)
+      setter(s.size === 0 ? new Set() : s)
+    }
   } else if (showSet.has(topic)) {
+    // Topic is shown — hide it
     showSet.delete(topic)
-    setter(showSet.size === 0 ? new Set() : showSet)
+    // If set now matches the "all defaults shown" state, revert to null
+    const defaultVisible = allTopics.filter(t => !_DEFAULT_HIDDEN.has(t))
+    const matchesDefault = defaultVisible.every(t => showSet.has(t)) && showSet.size === defaultVisible.length
+    setter(matchesDefault ? null : (showSet.size === 0 ? new Set() : showSet))
   } else {
+    // Topic is hidden — show it
     showSet.add(topic)
-    const allVisible = allTopics.filter(t => !_DEFAULT_HIDDEN.has(t))
-    setter([...showSet].length >= allVisible.length ? null : showSet)
+    const defaultVisible = allTopics.filter(t => !_DEFAULT_HIDDEN.has(t))
+    const matchesDefault = defaultVisible.every(t => showSet.has(t)) && showSet.size === defaultVisible.length
+    setter(matchesDefault ? null : showSet)
   }
   _pollRues()
 }
@@ -2790,11 +2853,6 @@ async function _ruesToggleSub(topic) {
 })()
 
 // ── Rotation panel ────────────────────────────────────────────────────────────
-const _ROT_STATE_COLORS = {
-  idle: 'var(--dim)', bootstrap_a: 'var(--cyan)', bootstrap_b: 'var(--cyan)',
-  rotating: 'var(--green)', in_progress: 'var(--yellow)', error: 'var(--red)',
-}
-
 function _rotToggle() {
   fetch(`${API}/api/rotation/toggle`, {
     method: 'POST', headers: {'Content-Type':'application/json'},
@@ -2815,25 +2873,69 @@ function _updateRotToggle() {
   thumb.style.background  = _rotEnabled ? 'var(--bg1)' : 'var(--dim)'
 }
 
+const _ROT_STATE_COLORS = {
+  idle: 'var(--dim)', bootstrap_a: 'var(--cyan)', bootstrap_b: 'var(--cyan)',
+  rotating: 'var(--green)', in_progress: 'var(--yellow)', error: 'var(--red)',
+}
+
+function _rotMaximize() {
+  const el = document.getElementById('rot-overlay')
+  if (el) { el.style.display = 'flex'; _pollRotation() }
+}
+function _rotMinimize() {
+  const el = document.getElementById('rot-overlay')
+  if (el) el.style.display = 'none'
+}
+// Close on Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') _rotMinimize() })
+
+function _rotLogHtml(entries) {
+  if (!entries || !entries.length) return '<span style="color:var(--dim)">no log entries yet</span>'
+  return entries.map(e => {
+    const lvl = e.level || 'info'
+    const col = lvl === 'error' ? 'var(--red)'
+              : lvl === 'warn'  ? 'var(--yellow)'
+              : lvl === 'ok'    ? 'var(--green)'
+              : lvl === 'step'  ? 'var(--teal)'
+              : 'var(--dim)'
+    return `<div style="padding:1px 0;display:flex;gap:8px;">` +
+           `<span style="color:var(--dim);flex-shrink:0;">${e.ts||''}</span>` +
+           `<span style="color:${col};">${(e.msg||'').replace(/</g,'&lt;')}</span>` +
+           `</div>`
+  }).join('')
+}
+
 async function _pollRotation() {
   try {
     const d = await fetch(`${API}/api/rotation/status`).then(r => r.json())
     _rotEnabled = d.enabled || false
     _updateRotToggle()
+
+    const stateCol = _ROT_STATE_COLORS[d.state] || 'var(--dim)'
+
+    // Update inline panel
     const badge = document.getElementById('rot-state-badge')
     const msg   = document.getElementById('rot-status-msg')
     const body  = document.getElementById('rot-log-body')
     if (badge) {
       badge.textContent  = d.state || 'idle'
-      badge.style.color  = _ROT_STATE_COLORS[d.state] || 'var(--dim)'
-      badge.style.border = `1px solid ${_ROT_STATE_COLORS[d.state] || 'var(--border)'}`
+      badge.style.color  = stateCol
+      badge.style.border = `1px solid ${stateCol}`
     }
     if (msg) msg.textContent = d.status_msg || ''
-    if (body && d.log && d.log.length) {
-      body.innerHTML = d.log.map(e => {
-        const col = e.ok === false ? 'var(--red)' : e.ok === true ? 'var(--green)' : 'var(--dim)'
-        return `<div style="padding:1px 0;"><span style="color:var(--dim)">${e.ts||''}</span> <span style="color:${col}">${e.msg||''}</span></div>`
-      }).join('')
+    if (body && d.log) body.innerHTML = _rotLogHtml(d.log.slice(0, 15))
+
+    // Update overlay if open
+    const overlay = document.getElementById('rot-overlay')
+    if (overlay && overlay.style.display !== 'none') {
+      const obadge = document.getElementById('rot-overlay-badge')
+      const olog   = document.getElementById('rot-overlay-log')
+      if (obadge) {
+        obadge.textContent  = d.state || 'idle'
+        obadge.style.color  = stateCol
+        obadge.style.border = `1px solid ${stateCol}`
+      }
+      if (olog && d.log) olog.innerHTML = _rotLogHtml(d.log)
     }
   } catch(e) {}
 }

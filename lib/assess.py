@@ -260,7 +260,7 @@ def parse_stake_info(output: str, current_tip: int = 0) -> dict:
 
     if result["active_epoch"] is not None and current_tip > 0:
         stake_epoch   = result["active_epoch"] - 2
-        current_epoch = current_tip // EPOCH_BLOCKS
+        current_epoch = current_tip // EPOCH_BLOCKS + 1
         result["transitions"] = max(0, current_epoch - stake_epoch)
     else:
         m3 = re.search(r"(?:epoch\s+transitions?|counter)[\s:]+(\d+)", output, re.IGNORECASE)
@@ -273,7 +273,7 @@ def parse_stake_info(output: str, current_tip: int = 0) -> dict:
             result["status"] = "active"
         else:
             stake_epoch   = result["active_epoch"] - 2
-            current_epoch = current_tip // EPOCH_BLOCKS
+            current_epoch = current_tip // EPOCH_BLOCKS + 1
             seen = max(0, current_epoch - stake_epoch)
             result["transitions"] = seen
             result["status"] = "seeded" if seen == 0 else "maturing"

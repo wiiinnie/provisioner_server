@@ -380,8 +380,13 @@ def _handle_activate(decoded: dict, block_height: int | None) -> None:
 
     with _pending_lock:
         pending = _pending_activations.pop(prov_addr, None)
-    elapsed = round(time.time() - pending["wall_ts"], 1) if pending else None
 
+    if not pending:
+        # No deposit race pending — this activate came from rotation seeding,
+        # manual stake, or another source. Don't pollute deposit race log.
+        return
+
+    elapsed = round(time.time() - pending["wall_ts"], 1)
     _dlog({
         "type":      "activate_confirmed",
         "step":      3,

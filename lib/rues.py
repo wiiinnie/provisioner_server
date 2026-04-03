@@ -332,8 +332,7 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
     if topic == "block_accepted" and height:
         try:
             from .rotation import on_block
-            from .wallet import get_password
-            on_block(height, get_password() or "")
+            on_block(height)
         except Exception as _rot_err:
             _log(f"[rotation] on_block error: {_rot_err}")
 
