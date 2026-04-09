@@ -42,7 +42,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from .config import _log, cfg
+from .config import _log, cfg, _ROTATION_LOG_PATH
 
 SEED_DUSK    = 1000.0
 EPOCH_BLOCKS = 2160
@@ -55,7 +55,7 @@ IN_PROGRESS = "in_progress"
 ERROR       = "error"
 
 _state_lock   = threading.Lock()
-_rot_log      = deque(maxlen=200)
+_rot_log      = deque(maxlen=1000)
 _rot_log_lock = threading.Lock()
 
 _rotation_state: dict = {
@@ -68,7 +68,36 @@ _rotation_state: dict = {
     "pending_terminate":      None,   # addr to retry terminate
     "pending_deactivate":     None,   # addr to retry deactivate (maturing node fix)
     "waiting_for_ta1_idx":    None,   # idx: waiting for this node to reach ta=1 before re-seeding
+    # sweeper
+    "sweeper_candidate_block":  -1,   # block when candidate was recorded
+    "sweeper_candidate_dusk":  0.0,   # pool balance at candidate block
 }
+
+# ── Sweeper event delta tracker ───────────────────────────────────────────────
+# Tracks net pool balance change between sweeper checks via RUES events.
+# +deposit, +reward  →  pool grows
+# -activate (anyone) →  pool shrinks
+_sweep_delta: float      = 0.0
+_sweep_delta_lock        = threading.Lock()
+
+def sweep_on_event(topic: str, decoded: dict) -> None:
+    """
+    Tracks net pool balance changes between sweeper checks.
+    Pool increases: deposit, reward, liquidate
+    Pool decreases: activate
+    """
+    global _sweep_delta
+    try:
+        if topic in ("deposit", "reward", "liquidate"):
+            amount = int(str(decoded.get("amount") or 0)) / 1e9
+            with _sweep_delta_lock:
+                _sweep_delta += amount
+        elif topic == "activate":
+            amount = int(str(decoded.get("amount") or decoded.get("value") or 0)) / 1e9
+            with _sweep_delta_lock:
+                _sweep_delta -= amount
+    except Exception:
+        pass
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -88,6 +117,11 @@ def _rlog(msg: str, ok: bool | None = None, level: str = "info") -> None:
     _log(f"[rotation] {prefix}{msg}")
     with _state_lock:
         _rotation_state["status_msg"] = msg
+    try:
+        with open(_ROTATION_LOG_PATH, "a") as _f:
+            _f.write(f"{ts}  {prefix}{msg}\n")
+    except Exception:
+        pass
 
 
 def _rlog_ok(msg: str)    -> None: _rlog(msg, ok=True,  level="ok")
@@ -118,6 +152,29 @@ def _save_state() -> None:
         _log(f"[rotation] save error: {e}")
 
 
+def _load_log_from_file() -> None:
+    """Load last 1000 rotation log lines from disk into the in-memory deque."""
+    try:
+        if not os.path.exists(_ROTATION_LOG_PATH):
+            return
+        with open(_ROTATION_LOG_PATH) as f:
+            lines = f.readlines()
+        for line in reversed(lines[-1000:]):
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+            parts = line.split("  ", 1)
+            ts  = parts[0].strip() if len(parts) == 2 else ""
+            msg = parts[1] if len(parts) == 2 else line
+            level = ("error" if "✖" in msg else ("ok" if "✓" in msg else
+                     ("warn" if "⚠" in msg else ("step" if "→" in msg else "info"))))
+            with _rot_log_lock:
+                _rot_log.append({"ts": ts, "msg": msg, "ok": None, "level": level})
+        _log(f"[rotation] loaded {min(len(lines), 1000)} log lines from disk")
+    except Exception as e:
+        _log(f"[rotation] log load error: {e}")
+
+
 def _load_state() -> None:
     try:
         if os.path.exists(STATE_FILE):
@@ -130,6 +187,7 @@ def _load_state() -> None:
         _log(f"[rotation] load error: {e}")
 
 
+_load_log_from_file()
 _load_state()
 
 
@@ -139,7 +197,7 @@ def get_status() -> dict:
     with _state_lock:
         state = dict(_rotation_state)
     with _rot_log_lock:
-        log = list(_rot_log)[:50]
+        log = list(_rot_log)[:200]
     return {**state, "log": log}
 
 
@@ -205,7 +263,7 @@ def seed_if_needed(amount_dusk: float, source: str) -> bool:
 
     target_idx = rot_inactive[0]
     _rlog_step(f"deposit fast-path: {amount_dusk:.4f} DUSK arrived, seeding prov[{target_idx}]")
-    threading.Thread(target=_seed_node, args=(target_idx, SEED_DUSK, "deposit fast-path"),
+    threading.Thread(target=_seed_node, args=(target_idx, SEED_DUSK, "deposit fast-path", nodes),
                      daemon=True).start()
     return True
 
@@ -292,6 +350,8 @@ def _detect_and_log_state() -> None:
 # ── Main entry point — called from rues.py on block_accepted ─────────────────
 
 def on_block(block_height: int) -> None:
+    global _sweep_delta
+    _log(f"[rotation] on_block called height={block_height}")
     with _state_lock:
         enabled = _rotation_state["enabled"]
         state   = _rotation_state["state"]
@@ -305,23 +365,40 @@ def on_block(block_height: int) -> None:
     cur_epoch  = block_height // EPOCH_BLOCKS + 1
     in_rot_win = snatch_win < blk_left <= rot_win
 
-    # ── Retry pending terminate (regular window, once per epoch) ─────────────
+    # ── Retry pending terminate/deactivate (regular window, every 10 blocks) ──
     with _state_lock:
-        pending_term = _rotation_state.get("pending_terminate")
+        pending_term  = _rotation_state.get("pending_terminate")
         pending_deact = _rotation_state.get("pending_deactivate")
-    if pending_term and blk_left > rot_win:
-        threading.Thread(target=_retry_terminate, args=(pending_term,), daemon=True).start()
-        return
-    if pending_deact and blk_left > rot_win:
-        threading.Thread(target=_retry_deactivate, args=(pending_deact,), daemon=True).start()
-        return
+        last_check    = _rotation_state["last_state_check_block"]
+
+    due = block_height - last_check >= STATE_CHECK_BLOCKS
+    if due and blk_left > rot_win:
+        if pending_term:
+            threading.Thread(target=_retry_terminate, args=(pending_term,), daemon=True).start()
+        elif pending_deact:
+            threading.Thread(target=_retry_deactivate, args=(pending_deact,), daemon=True).start()
 
     # ── Periodic state check every STATE_CHECK_BLOCKS ────────────────────────
-    with _state_lock:
-        last_check = _rotation_state["last_state_check_block"]
-    if block_height - last_check >= STATE_CHECK_BLOCKS and blk_left > rot_win:
+    if due and blk_left > rot_win:
         with _state_lock:
             _rotation_state["last_state_check_block"] = block_height
+
+        # Snapshot and reset delta atomically before starting any threads
+        with _sweep_delta_lock:
+            delta_snapshot = _sweep_delta
+            _sweep_delta = 0.0
+
+        # ── Sweeper: check if previous candidate is still idle ────────────────
+        with _state_lock:
+            cand_block = _rotation_state["sweeper_candidate_block"]
+            cand_dusk  = _rotation_state["sweeper_candidate_dusk"]
+        if cand_block > 0 and block_height - cand_block >= STATE_CHECK_BLOCKS:
+            threading.Thread(target=_run_sweeper,
+                             args=(cand_dusk, delta_snapshot, blk_left), daemon=True).start()
+            with _state_lock:
+                _rotation_state["sweeper_candidate_block"] = -1
+                _rotation_state["sweeper_candidate_dusk"]  = 0.0
+
         threading.Thread(target=_run_state_check,
                          args=(block_height, cur_epoch, blk_left), daemon=True).start()
         return
@@ -349,6 +426,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
     Runs every STATE_CHECK_BLOCKS. Assesses provisioner state and acts:
     seeds inactive nodes, fixes unstaggered maturing nodes.
     """
+    _rlog_info(f"state check blk={block_height} epoch={cur_epoch} blk_left={blk_left}")
     try:
         st    = _assess()
         nodes = st.get("by_idx", {})
@@ -358,9 +436,20 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
         maturing = [i for i in rot if nodes.get(i,{}).get("status") in ("maturing","seeded")]
         inactive = [i for i in rot if nodes.get(i,{}).get("status") == "inactive"]
         tas      = {i: nodes.get(i,{}).get("ta") for i in rot}
+        _rlog_info(f"A:{len(active)} M:{len(maturing)} I:{len(inactive)} ta={tas}")
 
-        _rlog_info(f"state check blk={block_height}: A:{len(active)} M:{len(maturing)} "
-                   f"I:{len(inactive)} ta={tas}")
+        # ── Record sweeper candidate unconditionally before any early returns ──
+        # Must happen before state-branch returns so candidate is always set.
+        try:
+            pool_now   = _pool_dusk()
+            min_sweep  = float(cfg("min_deposit_dusk") or 100.0)
+            if pool_now >= min_sweep:
+                with _state_lock:
+                    _rotation_state["sweeper_candidate_block"] = block_height
+                    _rotation_state["sweeper_candidate_dusk"]  = pool_now
+                _rlog_info(f"sweeper: {pool_now:.4f} DUSK in pool — checking again in {STATE_CHECK_BLOCKS} blocks")
+        except Exception:
+            pass
 
         # ── Check if we were waiting for a node to reach ta=1 for re-seed ────
         with _state_lock:
@@ -376,7 +465,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                     with _state_lock:
                         _rotation_state["waiting_for_ta1_idx"] = None
                     threading.Thread(target=_seed_node,
-                                     args=(inactive_rot[0], SEED_DUSK, "stagger fix"),
+                                     args=(inactive_rot[0], SEED_DUSK, "stagger fix", nodes),
                                      daemon=True).start()
                     return
                 else:
@@ -384,7 +473,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                     with _state_lock:
                         _rotation_state["waiting_for_ta1_idx"] = None
             else:
-                _rlog_info(f"waiting for prov[{waiting_idx}] ta=1 (currently ta={waiting_ta})")
+                pass  # waiting for ta=1 — silent, logged when it happens
                 return  # still waiting, don't act on other things
 
         # ── A:1 M:1 ta=1 → healthy ────────────────────────────────────────────
@@ -392,16 +481,16 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
             slave_idx = maturing[0]
             slave_ta  = tas.get(slave_idx)
             if slave_ta == 1:
-                _rlog_info(f"healthy: rot_active=prov[{active[0]}] rot_slave=prov[{slave_idx}] (ta=1)")
+                pass  # healthy — no log (fires every 10 blocks, noisy)
             elif slave_ta == 2:
-                _rlog_warn(f"rot_slave prov[{slave_idx}] is ta=2 — not ready for rotation yet")
+                pass  # ta=2 not ready — pre-check will warn 5 blocks before window
             return
 
         # ── A:1 M:0 I:1 → seed inactive ──────────────────────────────────────
         if len(active) == 1 and len(maturing) == 0 and len(inactive) == 1:
             _rlog_warn(f"no rot_slave — seeding inactive prov[{inactive[0]}] with {SEED_DUSK:.0f} DUSK")
             threading.Thread(target=_seed_node,
-                             args=(inactive[0], SEED_DUSK, "periodic check"),
+                             args=(inactive[0], SEED_DUSK, "periodic check", nodes),
                              daemon=True).start()
             return
 
@@ -418,8 +507,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
         if len(active) == 0 and len(maturing) == 2:
             ta_vals = sorted([tas.get(i) for i in maturing if tas.get(i) is not None])
             if ta_vals == [1, 2]:
-                _rlog_info(f"both maturing, staggered correctly (ta={ta_vals}) — waiting for epoch transition")
-                return
+                return  # healthy stagger — silent
             # Both same ta — bad stagger, deactivate smaller
             stakes = {i: nodes.get(i,{}).get("stake_dusk", 0.0) for i in maturing}
             smaller = min(stakes, key=stakes.get)
@@ -437,7 +525,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
         if len(active) == 0 and len(maturing) == 1 and len(inactive) == 1:
             _rlog_warn(f"no active provisioner, one maturing — seeding prov[{inactive[0]}]")
             threading.Thread(target=_seed_node,
-                             args=(inactive[0], SEED_DUSK, "periodic check"),
+                             args=(inactive[0], SEED_DUSK, "periodic check", nodes),
                              daemon=True).start()
             return
 
@@ -454,7 +542,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
             with _state_lock:
                 _rotation_state["waiting_for_ta1_idx"] = target
             threading.Thread(target=_seed_node,
-                             args=(target, SEED_DUSK, "initial bootstrap"),
+                             args=(target, SEED_DUSK, "initial bootstrap", nodes),
                              daemon=True).start()
             return
 
@@ -462,6 +550,103 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
 
     except Exception as e:
         _rlog_err(f"state check error: {e}")
+
+
+# ── Sweeper ───────────────────────────────────────────────────────────────────
+
+def _run_sweeper(candidate_dusk: float, delta: float, blk_left: int) -> None:
+    """
+    Fires 10 blocks after a pool candidate was recorded.
+    delta is snapshotted atomically in on_block before this thread starts.
+    idle_est = candidate + delta (deposits + rewards + liquidations - activations)
+    """
+    try:
+        rot_win    = int(cfg("rotation_window") or 41)
+        snatch_win = int(cfg("snatch_window")   or 11)
+        min_sweep  = float(cfg("min_deposit_dusk") or 100.0)
+
+        idle_est = max(0.0, candidate_dusk + delta)
+
+        _rlog_info(f"sweeper: re-check — candidate={candidate_dusk:.4f} delta={delta:+.4f} idle≈{idle_est:.4f} DUSK")
+
+        if idle_est < min_sweep:
+            _rlog_info(f"sweeper: idle {idle_est:.4f} < {min_sweep:.0f} DUSK threshold — skipping")
+            return
+
+        # Fresh pool fetch to confirm
+        pool = _pool_dusk()
+        _rlog_info(f"sweeper: real pool={pool:.4f} DUSK")
+        if pool < min_sweep:
+            _rlog_info(f"sweeper: pool empty or below threshold — skipping")
+            return
+
+        # Use the lower of estimate and actual (be conservative)
+        alloc_dusk = min(idle_est, pool)
+        if alloc_dusk < min_sweep:
+            return
+
+        in_snatch_or_rot = blk_left <= rot_win
+
+        # Pick target based on window
+        st    = _assess()
+        nodes = st.get("by_idx", {})
+        rot   = _rot_indices()
+        master = _master_idx()
+
+        rot_slave_idx  = next((i for i in rot
+                               if i != master
+                               and nodes.get(i,{}).get("status") in ("maturing","seeded")
+                               and nodes.get(i,{}).get("ta") == 1), None)
+        rot_active_idx = next((i for i in rot
+                               if i != master
+                               and nodes.get(i,{}).get("status") == "active"
+                               and nodes.get(i,{}).get("ta") == 0), None)
+
+        if in_snatch_or_rot and rot_slave_idx is not None:
+            target_idx = rot_slave_idx
+            label = "rot/snatch → rot_slave (ta=1, no slash)"
+        elif rot_active_idx is not None:
+            # Check slash headroom for active top-up
+            try:
+                from .assess import _fetch_capacity, _max_topup_active
+                cap      = _fetch_capacity(_pw())
+                headroom = _max_topup_active(cap)
+                if headroom <= 0:
+                    _rlog_warn(f"sweeper: rot_active headroom exhausted — skipping {alloc_dusk:.2f} DUSK")
+                    return
+                alloc_dusk = min(alloc_dusk, headroom)
+            except Exception as e:
+                _rlog_warn(f"sweeper: capacity check error: {e}")
+                return
+            target_idx = rot_active_idx
+            label = "regular → rot_active (slash-capped)"
+        else:
+            return  # no valid target
+
+        target_addr = _addr(target_idx, nodes)
+        if not target_addr:
+            _rlog_err(f"sweeper: no address for prov[{target_idx}]")
+            return
+
+        from .wallet import WALLET_PATH
+        alloc_lux = int(alloc_dusk * 1e9)
+        _rlog_step(f"sweeper: {alloc_dusk:.4f} DUSK idle → prov[{target_idx}] [{label}]")
+        r = _cmd(f"pool stake-activate --skip-confirmation "
+                 f"--amount {alloc_lux} --provisioner {target_addr} "
+                 f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
+        if r.get("ok"):
+            _rlog_ok(f"sweeper: allocated {alloc_dusk:.4f} DUSK → prov[{target_idx}]")
+            # Mark this address so deposit race doesn't log the resulting activate event
+            try:
+                from .events import mark_sweeper_activation
+                mark_sweeper_activation(target_addr)
+            except Exception:
+                pass
+        else:
+            _rlog_err(f"sweeper: allocation failed: {r.get('stderr','')[:100]}")
+
+    except Exception as e:
+        _rlog_err(f"sweeper error: {e}")
 
 
 # ── Pre-rotation check ────────────────────────────────────────────────────────
@@ -490,7 +675,17 @@ def _precheck_rotation(cur_epoch: int) -> None:
             return
 
         if rot_slave_idx is None:
-            active_ta  = nodes.get(rot_active_idx,{}).get("ta")
+            # Check for A:2 — both rot nodes active, no maturing node.
+            # Special case: liquidate the smaller one to recover healthy state.
+            both_active = [i for i in rot if nodes.get(i,{}).get("status") == "active"]
+            if len(both_active) == 2:
+                stakes = {i: nodes.get(i,{}).get("stake_dusk", 0.0) for i in both_active}
+                smaller_idx = min(stakes, key=stakes.get)
+                _rlog_warn(f"pre-check epoch {cur_epoch}: A:2 detected — "
+                           f"will liquidate prov[{smaller_idx}] ({stakes[smaller_idx]:.2f} DUSK) "
+                           f"to recover healthy state")
+                # Allow rotation to proceed — _run_rotation handles A:2 path
+                return
             ta_summary = {i: nodes.get(i,{}).get("ta") for i in rot}
             _rlog_warn(f"pre-check epoch {cur_epoch}: no rot_slave (ta=1) found, "
                        f"ta={ta_summary} — skipping rotation this epoch")
@@ -509,8 +704,11 @@ def _precheck_rotation(cur_epoch: int) -> None:
 
 # ── Seed node ─────────────────────────────────────────────────────────────────
 
-def _seed_node(idx: int, amount_dusk: float, reason: str) -> None:
-    """Stake exactly amount_dusk into an inactive provisioner."""
+def _seed_node(idx: int, amount_dusk: float, reason: str, nodes: dict = None) -> None:
+    """Stake exactly amount_dusk into an inactive provisioner.
+    If the node has residual rewards (inactive but reward_dusk > 0),
+    runs liquidate + terminate first to fully reset the provisioner record.
+    """
     _set_state(IN_PROGRESS)
     try:
         from .wallet import WALLET_PATH
@@ -518,6 +716,24 @@ def _seed_node(idx: int, amount_dusk: float, reason: str) -> None:
         if not addr:
             _rlog_err(f"seed: prov_{idx}_address not configured")
             _set_state(ROTATING); return
+
+        # Pre-reset: if node has residual rewards, liquidate+terminate to clean state
+        reward_dusk = (nodes or {}).get(idx, {}).get("reward_dusk", 0.0) if nodes else 0.0
+        if reward_dusk > 0:
+            _rlog_step(f"seed prov[{idx}]: residual reward {reward_dusk:.4f} DUSK detected — "
+                       f"liquidate+terminate to reset before seeding")
+            r_liq = _cmd(f"pool liquidate --skip-confirmation --provisioner {addr}")
+            if not r_liq.get("ok"):
+                err = r_liq.get("stderr", "")[:300]
+                if not any(x in err.lower() for x in ("no stake", "nothing to liquidate", "does not exist")):
+                    _rlog_err(f"seed prov[{idx}]: pre-liquidate failed: {err}")
+                    _set_state(ROTATING); return
+                # Already empty — fine, continue to terminate
+            r_term = _cmd(f"pool terminate --skip-confirmation --provisioner {addr}")
+            if not r_term.get("ok"):
+                _rlog_err(f"seed prov[{idx}]: pre-terminate failed: {r_term.get('stderr','')[:300]}")
+                _set_state(ROTATING); return
+            _rlog_ok(f"seed prov[{idx}]: provisioner reset — proceeding with seed")
 
         pool = _pool_dusk()
         if pool < amount_dusk:
@@ -570,6 +786,95 @@ def _deactivate_maturing(idx: int, nodes: dict) -> None:
         _set_state(ROTATING)
 
 
+# ── A:2 recovery sequence ─────────────────────────────────────────────────────
+
+def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
+    """
+    Abnormal A:2 recovery: both rot nodes active, no maturing node.
+    Liquidate + terminate the smaller one, re-seed it → back to A:1 M:1 next epoch.
+    No bulk allocation (no ta=1 target exists).
+    """
+    from .wallet import WALLET_PATH
+    from .rues import register_tx_confirm
+
+    addr        = _addr(smaller_idx, nodes)
+    stake_dusk  = nodes[smaller_idx].get("stake_dusk", 0.0)
+    locked_dusk = nodes[smaller_idx].get("locked_dusk", 0.0)
+    reward_dusk = nodes[smaller_idx].get("reward_dusk", 0.0)
+
+    _rlog_step(f"─── A:2 recovery epoch {cur_epoch} ───")
+    _rlog_info(f"liquidating smaller rot node prov[{smaller_idx}] "
+               f"stake={stake_dusk:.2f} locked={locked_dusk:.2f} DUSK")
+
+    # ── Step 1: liquidate ─────────────────────────────────────────────────────
+    _rlog_step(f"[1/3] liquidate prov[{smaller_idx}]")
+    liq_evt = register_tx_confirm("liquidate")
+    r_liq   = _cmd(f"pool liquidate --skip-confirmation --provisioner {addr}")
+    if not r_liq.get("ok"):
+        err = r_liq.get("stderr","")[:300]
+        if any(x in err.lower() for x in ("no stake", "does not exist", "nothing to liquidate")):
+            _rlog_warn("[1/3] liquidate: already empty — proceeding")
+            liq_evt.set()
+        else:
+            _rlog_err(f"[1/3] liquidate FAILED: {err} — aborting A:2 recovery")
+            _set_state(ROTATING); _bump_epoch(cur_epoch); return
+    else:
+        _rlog_info("[1/3] liquidate tx sent — waiting for confirmation (120s)…")
+
+    if not liq_evt.wait(timeout=120):
+        _rlog_err("[1/3] liquidate confirmation timeout — aborting A:2 recovery")
+        _set_state(ROTATING); _bump_epoch(cur_epoch); return
+    _rlog_ok(f"[1/3] liquidate confirmed — {stake_dusk + locked_dusk:.4f} DUSK freed to pool")
+
+    # ── Step 2: terminate ─────────────────────────────────────────────────────
+    _rlog_step(f"[2/3] terminate prov[{smaller_idx}] (free rewards)")
+    term_evt = register_tx_confirm("terminate")
+    r_term   = _cmd(f"pool terminate --skip-confirmation --provisioner {addr}")
+    if not r_term.get("ok"):
+        err = r_term.get("stderr","")[:300]
+        _rlog_err(f"[2/3] terminate FAILED: {err} — marking for retry")
+        with _state_lock:
+            _rotation_state["pending_terminate"] = addr
+        _save_state()
+    else:
+        _rlog_info("[2/3] terminate tx sent — waiting for confirmation (120s)…")
+        if term_evt.wait(timeout=120):
+            _rlog_ok(f"[2/3] terminate confirmed — {reward_dusk:.4f} DUSK rewards freed")
+            with _state_lock:
+                _rotation_state["pending_terminate"] = None
+            _save_state()
+        else:
+            _rlog_err("[2/3] terminate confirmation timeout — marking for retry")
+            with _state_lock:
+                _rotation_state["pending_terminate"] = addr
+            _save_state()
+
+    # ── Step 3: re-seed → ta=2 ────────────────────────────────────────────────
+    # No bulk allocation — the other active node stays untouched.
+    # Freed stake goes into pool; re-seed takes 1000 back out.
+    _rlog_step(f"[3/3] re-seed prov[{smaller_idx}] with {SEED_DUSK:.0f} DUSK → ta=2")
+    seed_evt = register_tx_confirm("stake_activate")
+    seed_lux = int(SEED_DUSK * 1e9)
+    r_seed   = _cmd(
+        f"pool stake-activate --skip-confirmation "
+        f"--amount {seed_lux} --provisioner {addr} "
+        f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
+    if not r_seed.get("ok"):
+        _rlog_err(f"[3/3] re-seed FAILED: {r_seed.get('stderr','')[:300]}")
+        _rlog_info("[3/3] state check will retry seeding from pool on next tick")
+        _set_state(ROTATING); _bump_epoch(cur_epoch); return
+    _rlog_info("[3/3] re-seed tx sent — waiting for confirmation (120s)…")
+    if not seed_evt.wait(timeout=120):
+        _rlog_warn("[3/3] re-seed confirmation timeout — state check will verify")
+    else:
+        _rlog_ok(f"[3/3] prov[{smaller_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
+
+    _rlog_ok(f"─── A:2 recovery epoch {cur_epoch} complete ✓ ───")
+    _rlog_info(f"next state: prov[{smaller_idx}] → ta=1 next epoch → healthy A:1 M:1")
+    _set_state(ROTATING)
+    _bump_epoch(cur_epoch)
+
+
 # ── Main rotation sequence ────────────────────────────────────────────────────
 
 def _run_rotation(cur_epoch: int) -> None:
@@ -594,7 +899,14 @@ def _run_rotation(cur_epoch: int) -> None:
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
 
         if rot_slave_idx is None:
-            _rlog_warn("rotation: no rot_slave (ta=1) — skipping (pre-check should have caught this)")
+            # A:2 special case — both rot nodes active, no maturing node.
+            both_active = [i for i in rot if nodes.get(i,{}).get("status") == "active"]
+            if len(both_active) == 2:
+                stakes = {i: nodes.get(i,{}).get("stake_dusk", 0.0) for i in both_active}
+                smaller_idx = min(stakes, key=stakes.get)
+                _run_rotation_a2(cur_epoch, smaller_idx, nodes)
+                return
+            _rlog_warn("rotation: no rot_slave (ta=1) and not A:2 — skipping")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
 
         rot_active_addr = _addr(rot_active_idx, nodes)
@@ -602,6 +914,12 @@ def _run_rotation(cur_epoch: int) -> None:
         stake_dusk  = nodes[rot_active_idx].get("stake_dusk", 0.0)
         locked_dusk = nodes[rot_active_idx].get("locked_dusk", 0.0)
         reward_dusk = nodes[rot_active_idx].get("reward_dusk", 0.0)
+
+        # Freed amounts computed from assessed state — deterministic, no pool query needed.
+        # freed_by_liquidate = stake + locked (locked is returned to pool on liquidation)
+        # freed_by_terminate = rewards
+        freed_by_liquidate = stake_dusk + locked_dusk
+        freed_by_terminate = reward_dusk
 
         _rlog_step(f"─── rotation epoch {cur_epoch} ───")
         _rlog_info(f"rot_active = prov[{rot_active_idx}] | "
@@ -613,7 +931,7 @@ def _run_rotation(cur_epoch: int) -> None:
         liq_evt = register_tx_confirm("liquidate")
         r_liq   = _cmd(f"pool liquidate --skip-confirmation --provisioner {rot_active_addr}")
         if not r_liq.get("ok"):
-            err = r_liq.get("stderr","")[:120]
+            err = r_liq.get("stderr","")[:300]
             if any(x in err.lower() for x in ("no stake", "does not exist", "nothing to liquidate")):
                 _rlog_warn(f"[1/4] liquidate: already empty — proceeding")
                 liq_evt.set()
@@ -626,16 +944,16 @@ def _run_rotation(cur_epoch: int) -> None:
         if not liq_evt.wait(timeout=120):
             _rlog_err("[1/4] liquidate confirmation timeout — aborting rotation")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
-        freed_est = max(0.0, stake_dusk - locked_dusk)
-        _rlog_ok(f"[1/4] liquidate confirmed — ~{freed_est:.2f} DUSK freed to pool")
+        _rlog_ok(f"[1/4] liquidate confirmed — {freed_by_liquidate:.4f} DUSK freed to pool")
 
         # ── Step 2: terminate ─────────────────────────────────────────────────
         _rlog_step(f"[2/4] terminate prov[{rot_active_idx}] (free rewards)")
         term_evt = register_tx_confirm("terminate")
         r_term   = _cmd(f"pool terminate --skip-confirmation --provisioner {rot_active_addr}")
         if not r_term.get("ok"):
-            err = r_term.get("stderr","")[:120]
+            err = r_term.get("stderr","")[:300]
             _rlog_err(f"[2/4] terminate FAILED: {err} — marking for retry next epoch")
+            freed_by_terminate = 0.0
             with _state_lock:
                 _rotation_state["pending_terminate"] = rot_active_addr
             _save_state()
@@ -648,47 +966,58 @@ def _run_rotation(cur_epoch: int) -> None:
                 _save_state()
             else:
                 _rlog_err("[2/4] terminate confirmation timeout — marking for retry")
+                freed_by_terminate = 0.0
                 with _state_lock:
                     _rotation_state["pending_terminate"] = rot_active_addr
                 _save_state()
 
-        # ── Step 3: re-seed rot_active → ta=2 ────────────────────────────────
-        _rlog_step(f"[3/4] re-seed prov[{rot_active_idx}] with {SEED_DUSK:.0f} DUSK → rot_seeded (ta=2)")
-        pool = _pool_dusk()
-        _rlog_info(f"[3/4] pool balance: {pool:.4f} DUSK")
-        if pool < SEED_DUSK:
-            _rlog_err(f"[3/4] pool {pool:.2f} < {SEED_DUSK:.0f} DUSK — cannot re-seed → ERROR")
-            _set_state(ERROR); _bump_epoch(cur_epoch); return
+        # ── Step 3: allocate bulk to rot_slave (ta=1) ─────────────────────────
+        # Allocate BEFORE re-seeding so the large amount lands safely first.
+        # If this fails, stake stays in pool and deposit race handles it.
+        # If re-seed fails after this, state check will seed from pool on next tick.
+        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK)
+        _rlog_step(f"[3/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
+        _rlog_info(
+            f"[3/4] liquidate freed {freed_by_liquidate:.4f} DUSK + "
+            f"terminate freed {freed_by_terminate:.4f} DUSK - "
+            f"seed {SEED_DUSK:.0f} DUSK = {alloc_dusk:.4f} DUSK to allocate")
 
+        if alloc_dusk < 10.0:
+            _rlog_warn(f"[3/4] only {alloc_dusk:.2f} DUSK to allocate — nothing sent to rot_slave")
+        else:
+            alloc_lux = int(alloc_dusk * 1e9)
+            alloc_evt = register_tx_confirm("stake_activate")
+            r_alloc   = _cmd(
+                f"pool stake-activate --skip-confirmation "
+                f"--amount {alloc_lux} --provisioner {rot_slave_addr} "
+                f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
+            if r_alloc.get("ok"):
+                _rlog_info(f"[3/4] allocation tx sent — waiting for confirmation (120s)…")
+                if alloc_evt.wait(timeout=120):
+                    _rlog_ok(f"[3/4] {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1) confirmed")
+                else:
+                    _rlog_warn(f"[3/4] allocation confirmation timeout — stake likely landed, continuing")
+            else:
+                _rlog_err(f"[3/4] allocation failed: {r_alloc.get('stderr','')[:300]}")
+                _rlog_info("[3/4] remaining stake stays in pool — deposit race will handle it")
+
+        # ── Step 4: re-seed rot_active → ta=2 ────────────────────────────────
+        _rlog_step(f"[4/4] re-seed prov[{rot_active_idx}] with {SEED_DUSK:.0f} DUSK → rot_seeded (ta=2)")
+        seed_evt = register_tx_confirm("stake_activate")
         seed_lux = int(SEED_DUSK * 1e9)
         r_seed   = _cmd(
             f"pool stake-activate --skip-confirmation "
             f"--amount {seed_lux} --provisioner {rot_active_addr} "
             f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
         if not r_seed.get("ok"):
-            _rlog_err(f"[3/4] re-seed FAILED: {r_seed.get('stderr','')[:120]} → ERROR")
-            _set_state(ERROR); _bump_epoch(cur_epoch); return
-        _rlog_ok(f"[3/4] prov[{rot_active_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2")
-
-        # ── Step 4: allocate bulk to rot_slave ────────────────────────────────
-        _rlog_step(f"[4/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
-        pool_after = _pool_dusk()
-        alloc_dusk = max(0.0, pool_after - SEED_DUSK)  # keep seed buffer
-        _rlog_info(f"[4/4] pool after re-seed: {pool_after:.4f} DUSK → allocating {alloc_dusk:.4f} DUSK")
-
-        if alloc_dusk < 10.0:
-            _rlog_warn(f"[4/4] only {alloc_dusk:.2f} DUSK available — nothing to allocate to rot_slave")
+            _rlog_err(f"[4/4] re-seed FAILED: {r_seed.get('stderr','')[:300]}")
+            _rlog_info("[4/4] state check will retry seeding from pool on next tick")
+            _set_state(ROTATING); _bump_epoch(cur_epoch); return
+        _rlog_info(f"[4/4] re-seed tx sent — waiting for confirmation (120s)…")
+        if not seed_evt.wait(timeout=120):
+            _rlog_warn("[4/4] re-seed confirmation timeout — state check will verify")
         else:
-            alloc_lux = int(alloc_dusk * 1e9)
-            r_alloc   = _cmd(
-                f"pool stake-activate --skip-confirmation "
-                f"--amount {alloc_lux} --provisioner {rot_slave_addr} "
-                f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
-            if r_alloc.get("ok"):
-                _rlog_ok(f"[4/4] {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1)")
-            else:
-                _rlog_err(f"[4/4] allocation failed: {r_alloc.get('stderr','')[:80]}")
-                _rlog_info("[4/4] remaining stake stays in pool — deposit race will handle it")
+            _rlog_ok(f"[4/4] prov[{rot_active_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
 
         _rlog_ok(f"─── rotation epoch {cur_epoch} complete ✓ ───")
         _rlog_info(f"next state: prov[{rot_slave_idx}] → active next epoch | "

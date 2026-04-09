@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Provisioner Dashboard  v2.0.1 -->
+<!-- Provisioner Dashboard  v2.0.2 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -495,7 +495,6 @@
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-deactivate')">deactivate stake</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-liquidate')">liquidate</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-terminate')">terminate</button>
-        <button class="nav-btn nav-btn-action" onclick="openModal('modal-liq-term')">liquidate &amp; terminate</button>
         <div style="width:1px;height:18px;background:var(--border);margin:0 6px;flex-shrink:0;"></div>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-add-prov')">add provisioner</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-remove'); _populateRemoveModal()">remove provisioner</button>
@@ -555,8 +554,14 @@
         <span id="race-wins"   style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--green);">W0</span>
         <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--border);">/</span>
         <span id="race-losses" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);">L0</span>
+        <label title="Fire on tx/included instead of deposit event (~1 block faster, experimental)"
+               style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:auto;">
+          <input type="checkbox" id="fastpath-toggle" onchange="_setFastpath(this.checked)"
+                 style="accent-color:var(--teal);cursor:pointer;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--dim);">tx/included</span>
+        </label>
         <button onclick="_clearDepositLog()"
-          style="margin-left:auto;background:none;border:none;color:var(--dim);font-size:9px;cursor:pointer;font-family:'IBM Plex Mono',monospace;">clear</button>
+          style="background:none;border:none;color:var(--dim);font-size:9px;cursor:pointer;font-family:'IBM Plex Mono',monospace;">clear</button>
       </div>
       <div id="deposit-log-body"
            style="flex:1;min-height:0;overflow-y:auto;padding:4px 8px;
@@ -770,8 +775,20 @@
          onmouseleave="this.style.background='var(--border)'"
          title="Drag to resize rotation panel"></div>
 
-    <!-- Provisioner cards -->
-    <div style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;">
+    <!-- Provisioner tabs: LIVE / HISTORY -->
+    <div style="flex-shrink:0;display:flex;border-bottom:1px solid var(--border);background:var(--bg1);">
+      <button id="prov-tab-live" onclick="_provTab('live')"
+        style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.07em;padding:5px 14px;
+               background:transparent;border:none;border-bottom:2px solid var(--teal);
+               color:var(--teal);cursor:pointer;">LIVE</button>
+      <button id="prov-tab-history" onclick="_provTab('history')"
+        style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.07em;padding:5px 14px;
+               background:transparent;border:none;border-bottom:2px solid transparent;
+               color:var(--dim);cursor:pointer;">HISTORY</button>
+    </div>
+
+    <!-- LIVE tab content: provisioner cards -->
+    <div id="prov-content-live" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;">
       <div style="flex:1;min-height:0;border-bottom:1px solid var(--border);display:flex;flex-direction:column;">
         <div id="node0-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 0</div>
         <div id="node0-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
@@ -784,6 +801,52 @@
         <div id="node2-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 2</div>
         <div id="node2-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
       </div>
+    </div>
+
+    <!-- HISTORY tab content: stake chart + events -->
+    <div id="prov-content-history" style="display:none;flex:1;min-height:0;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;">
+
+      <!-- Chart controls -->
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--muted);">STAKE HISTORY</span>
+        <div style="display:flex;gap:5px;margin-left:4px;" id="hist-toggles">
+          <button id="hist-tog-0" onclick="_histToggle(0)"
+            style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+                   border:1px solid #378ADD;border-radius:3px;background:transparent;
+                   color:#378ADD;cursor:pointer;">p0</button>
+          <button id="hist-tog-1" onclick="_histToggle(1)"
+            style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+                   border:1px solid #1D9E75;border-radius:3px;background:transparent;
+                   color:#1D9E75;cursor:pointer;">p1</button>
+          <button id="hist-tog-2" onclick="_histToggle(2)"
+            style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+                   border:1px solid #BA7517;border-radius:3px;background:transparent;
+                   color:#BA7517;cursor:pointer;">p2</button>
+        </div>
+        <div style="display:flex;gap:3px;margin-left:auto;">
+          <button onclick="_histRange(360)" id="hist-r-6h"
+            style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
+                   border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;">6h</button>
+          <button onclick="_histRange(2160)" id="hist-r-24h"
+            style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
+                   border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;">24h</button>
+          <button onclick="_histRange(15120)" id="hist-r-7d"
+            style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
+                   border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;">7d</button>
+        </div>
+      </div>
+
+      <!-- Chart canvas -->
+      <div style="position:relative;height:180px;flex-shrink:0;">
+        <canvas id="hist-chart"></canvas>
+      </div>
+
+      <!-- Events log -->
+      <div style="flex-shrink:0;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;color:var(--muted);margin-bottom:5px;">EVENTS</div>
+        <div id="hist-events" style="font-family:'IBM Plex Mono',monospace;font-size:9px;"></div>
+      </div>
+
     </div>
   </div>
 
@@ -1038,43 +1101,6 @@
 </div>
 
 <!-- Liquidate + Terminate -->
-<div class="modal-overlay" id="modal-liq-term">
-  <div class="modal">
-    <div class="modal-title">Liquidate &amp; Terminate</div>
-    <div class="modal-body" style="margin-bottom:12px;">Remove active provisioner from consensus and return funds to pool. Liquidates then terminates sequentially.</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;">
-      <label id="liqterm-prov0-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="liqterm-prov" id="liqterm-radio-0" value="0" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 0</span>
-          <span id="liqterm-prov0-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="liqterm-prov0-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="liqterm-prov1-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="liqterm-prov" id="liqterm-radio-1" value="1" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 1</span>
-          <span id="liqterm-prov1-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="liqterm-prov1-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="liqterm-prov2-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="liqterm-prov" id="liqterm-radio-2" value="2" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 2</span>
-          <span id="liqterm-prov2-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="liqterm-prov2-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-    </div>
-    <div id="liqterm-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
-    <div class="modal-actions">
-      <button class="mbtn mbtn-cancel" onclick="closeModal('modal-liq-term')">cancel</button>
-      <button class="mbtn mbtn-danger" onclick="doLiquidateAndTerminate()">liquidate &amp; terminate</button>
-    </div>
-  </div>
-</div>
 
 <!-- Remove provisioner -->
 <div class="modal-overlay" id="modal-remove">
@@ -1245,7 +1271,7 @@ function resolveBlock(block, result, label) {
   // Trigger provisioner panel refresh after successful state-changing commands
   const STATE_CHANGE_LABELS = new Set([
     'allocate_stake', 'deactivate_stake', 'liquidate', 'terminate',
-    'liquidate_terminate', 'remove_provisioner', 'add_provisioner',
+    'remove_provisioner', 'add_provisioner',
     'stake_info', 'recycle', 'sozu_unstake', 'sozu_stake',
     'withdraw_rewards', 'pool_contract_balance',
   ])
@@ -1749,6 +1775,7 @@ async function loadConfig() {
     const snatchMinEl = document.getElementById('cfg-snatch-min-deposit')
     if (snatchMinEl) snatchMinEl.value = _cfg.snatch_min_deposit_dusk ?? 100
     document.getElementById('cfg-gas-limit').value     = _cfg.gas_limit ?? 2000000
+    document.getElementById('cfg-gas-price').value     = _cfg.gas_price ?? 1
     // Rotation config fields
     if (document.getElementById('cfg-prov0-sk')) {
       document.getElementById('cfg-prov0-sk').value    = ''  // never pre-fill SK
@@ -1810,6 +1837,7 @@ async function saveConfig() {
     min_deposit_dusk:     parseFloat(document.getElementById('cfg-min-deposit').value || '100'),
     snatch_min_deposit_dusk: parseFloat(document.getElementById('cfg-snatch-min-deposit')?.value || '100'),
     gas_limit:            parseInt(document.getElementById('cfg-gas-limit').value || '2000000'),
+    gas_price:            parseInt(document.getElementById('cfg-gas-price').value || '1'),
     master_idx:           parseInt(document.getElementById('cfg-master-idx')?.value ?? '-1'),
   }
   try {
@@ -1862,7 +1890,6 @@ function openModal(id) {
   if (id === 'modal-track') { document.getElementById('track-hash-input').value = ''; document.getElementById('track-status').textContent = '' }
   if (id === 'modal-alloc-stake') _populateAllocModal()
   if (id === 'modal-deactivate')  _populateAddrModal('deact')
-  if (id === 'modal-liq-term')    _populateAddrModal('liqterm')
   if (id === 'modal-liquidate')   _populateAddrModal('liq')
   if (id === 'modal-terminate')   _populateAddrModal('term')
 }
@@ -2044,17 +2071,6 @@ async function doTerminate() {
   if (!addr) { document.getElementById('term-status').textContent = 'No address — run stake info first'; return }
   document.getElementById('term-status').textContent = `Terminating prov[${idx}]…`
   provAction(`terminate prov[${idx}]`, '/api/provisioner/terminate',
-    {provisioner_address: addr})
-}
-
-async function doLiquidateAndTerminate() {
-  const sel = document.querySelector('input[name="liqterm-prov"]:checked')
-  if (!sel) { document.getElementById('liqterm-status').textContent = 'Select a provisioner'; return }
-  const idx  = parseInt(sel.value)
-  const addr = document.getElementById(`liqterm-prov${idx}-addr`).dataset.full || ''
-  if (!addr) { document.getElementById('liqterm-status').textContent = 'No address — run stake info first'; return }
-  document.getElementById('liqterm-status').textContent = `Liquidating & terminating prov[${idx}]…`
-  provAction(`liquidate_terminate prov[${idx}]`, '/api/provisioner/liquidate_terminate',
     {provisioner_address: addr})
 }
 
@@ -2296,6 +2312,24 @@ function _updateBlkCounter(height) {
 
 let _lastDepLogLen = 0
 
+async function _loadFastpathState() {
+  try {
+    const d = await fetch(`${API}/api/events/fastpath`).then(r => r.json())
+    const cb = document.getElementById('fastpath-toggle')
+    if (cb) cb.checked = d.tx_included_fastpath || false
+  } catch(e) {}
+}
+
+async function _setFastpath(enabled) {
+  try {
+    await fetch(`${API}/api/events/fastpath`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled})
+    })
+  } catch(e) {}
+}
+
 async function _clearDepositLog() {
   try {
     await fetch(`${API}/api/events/deposit_log/clear`, {method: 'POST'})
@@ -2329,16 +2363,19 @@ async function _pollDepositLog() {
 
     const groupMap = new Map()
     for (const e of entries) {
-      const amtKey  = e.amount != null ? e.amount.toFixed(4) : 'misc'
-      const provKey = e.prov_addr ? e.prov_addr.slice(0,12) : 'noprov'
-      const key     = `${amtKey}|${provKey}`
+      // Use explicit group_key if present, else fall back to amount|prov_addr
+      const key = e.group_key
+        ? e.group_key
+        : `${e.amount != null ? e.amount.toFixed(4) : 'misc'}|${e.prov_addr ? e.prov_addr.slice(0,12) : 'noprov'}`
       if (!groupMap.has(key)) groupMap.set(key, [])
       groupMap.get(key).push(e)
     }
-    for (const g of groupMap.values()) g.reverse()
+    for (const g of groupMap.values()) {
+      g.sort((a, b) => (a.step || 0) - (b.step || 0) || (a.ts || '').localeCompare(b.ts || ''))
+    }
 
     const OUR_TYPES = new Set(['deposit_received','deposit_error','deposit_skipped',
-                                'tx_confirmed','tx_failed','activate_confirmed'])
+                                'tx_confirmed','tx_failed','activate_confirmed','lost_to'])
     const visible = [...groupMap.values()].filter(g => g.some(e => OUR_TYPES.has(e.type)))
 
     body.innerHTML = visible.map(g => {
@@ -2352,13 +2389,15 @@ async function _pollDepositLog() {
 
       const rows = g.map(e => {
         const step = e.step || 0
-        const stepLabel = step===1 ? '<span style="color:var(--dim);font-size:7.5px;">① </span>'
-                        : step===2 ? '<span style="color:var(--dim);font-size:7.5px;">② </span>'
-                        : step===3 ? '<span style="color:var(--dim);font-size:7.5px;">③ </span>'
+        const stepLabel = step===1   ? '<span style="color:var(--dim);font-size:7.5px;">① </span>'
+                        : step===2   ? '<span style="color:var(--dim);font-size:7.5px;">② </span>'
+                        : step===2.5 ? '<span style="color:var(--dim);font-size:7.5px;">  </span>'
+                        : step===3   ? '<span style="color:var(--dim);font-size:7.5px;">③ </span>'
                         : ''
         const col = e.type==='tx_confirmed' || e.type==='activate_confirmed' ? 'var(--green)'
                   : e.type==='deposit_received' ? 'var(--teal)'
                   : e.type==='deposit_skipped'  ? 'var(--dim)'
+                  : e.type==='lost_to'          ? 'var(--yellow)'
                   : e.ok===false ? 'var(--red)' : 'var(--cyan)'
         const blkStr = e.block ? ` blk#${e.block.toLocaleString()}` : ''
         return `<div style="padding:1px 0;font-size:8.5px;">` +
@@ -2941,7 +2980,228 @@ async function _pollRotation() {
 }
 
 setInterval(_pollRotation, 5000)
+_loadFastpathState()
 _pollRotation()
+
+
+// ── HISTORY TAB ──────────────────────────────────────────────────────────────
+
+let _histChart       = null
+let _histVisible     = [true, true, true]
+let _histRangeBlocks = 2160   // default 24h (~2160 blocks)
+const _histColors    = ['#378ADD', '#1D9E75', '#BA7517']
+const _histProvNames = ['prov 0', 'prov 1', 'prov 2']
+
+function _provTab(tab) {
+  const isLive = tab === 'live'
+  document.getElementById('prov-content-live').style.display    = isLive ? 'flex' : 'none'
+  document.getElementById('prov-content-history').style.display = isLive ? 'none' : 'flex'
+  const tabLive = document.getElementById('prov-tab-live')
+  const tabHist = document.getElementById('prov-tab-history')
+  tabLive.style.borderBottomColor = isLive ? 'var(--teal)' : 'transparent'
+  tabLive.style.color             = isLive ? 'var(--teal)' : 'var(--dim)'
+  tabHist.style.borderBottomColor = isLive ? 'transparent' : 'var(--teal)'
+  tabHist.style.color             = isLive ? 'var(--dim)' : 'var(--teal)'
+  if (!isLive) _histLoad()
+}
+
+function _histToggle(idx) {
+  _histVisible[idx] = !_histVisible[idx]
+  const btn = document.getElementById(`hist-tog-${idx}`)
+  btn.style.opacity = _histVisible[idx] ? '1' : '0.3'
+  if (_histChart) {
+    _histChart.data.datasets[idx].hidden = !_histVisible[idx]
+    _histChart.update('none')
+  }
+  _histRenderEvents()
+}
+
+function _histRange(blocks) {
+  _histRangeBlocks = blocks
+  ;['6h','24h','7d'].forEach(id => {
+    const btn = document.getElementById(`hist-r-${id}`)
+    if (!btn) return
+    btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--dim)'
+  })
+  const labelMap = {360:'6h', 2160:'24h', 15120:'7d'}
+  const activeBtn = document.getElementById(`hist-r-${labelMap[blocks]}`)
+  if (activeBtn) { activeBtn.style.borderColor = 'var(--teal)'; activeBtn.style.color = 'var(--teal)' }
+  _histLoad()
+}
+
+let _histData = null
+
+async function _histLoad() {
+  try {
+    const r    = await fetch(`${API}/api/history/stake?blocks=${_histRangeBlocks}`).then(r=>r.json())
+    _histData  = r
+    _histBuild(r)
+    _histRenderEvents()
+  } catch(e) { console.error('hist load error', e) }
+}
+
+function _histBuild(r) {
+  const snapshots = r.snapshots || []
+  const events    = r.events    || []
+
+  // Build per-provisioner data arrays aligned to snapshot blocks
+  const labels = snapshots.map(s => s.block)
+
+  const datasets = [0,1,2].map(idx => {
+    const data = snapshots.map(s => {
+      const n = (s.nodes || {})[idx]
+      return n != null ? Math.round(n.stake_dusk) : null
+    })
+
+    // Build event point overlays — one dot per event at the closest snapshot only
+    const evtForIdx = events.filter(e => e.idx === idx)
+    const dotSet = new Map()
+    evtForIdx.forEach(evt => {
+      let bestI = -1, bestDist = Infinity
+      snapshots.forEach((s, i) => {
+        const d = Math.abs((s.block || 0) - (evt.block || 0))
+        if (d < bestDist) { bestDist = d; bestI = i }
+      })
+      if (bestI >= 0 && bestDist < 50) dotSet.set(bestI, evt)
+    })
+    const pointRadii  = snapshots.map((_, i) => dotSet.has(i) ? 5 : 0)
+    const pointColors = snapshots.map((_, i) => {
+      const hit = dotSet.get(i)
+      if (!hit) return 'transparent'
+      if (['liquidate','terminate','deactivate','unstake'].includes(hit.topic)) return '#E24B4A'
+      return '#639922'
+    })
+
+    return {
+      label:                _histProvNames[idx],
+      data,
+      borderColor:          _histColors[idx],
+      borderWidth:          1.5,
+      tension:              0,
+      fill:                 false,
+      spanGaps:             true,
+      hidden:               !_histVisible[idx],
+      pointRadius:          pointRadii,
+      pointBackgroundColor: pointColors,
+      pointBorderColor:     'transparent',
+    }
+  })
+
+  // Epoch boundary annotations (vertical lines as dataset)
+  const epochBlocks = 2160
+  const minBlk = labels[0] || 0
+  const maxBlk = labels[labels.length-1] || 0
+  const firstEpochBoundary = Math.ceil(minBlk / epochBlocks) * epochBlocks
+  const epochBoundaries = []
+  for (let b = firstEpochBoundary; b <= maxBlk; b += epochBlocks) epochBoundaries.push(b)
+
+  if (_histChart) {
+    _histChart.destroy()
+    _histChart = null
+  }
+
+  const ctx = document.getElementById('hist-chart')
+  if (!ctx) return
+
+  _histChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            title: items => `blk #${(items[0]?.label||'').toLocaleString()}`,
+            label: c => {
+              const v = c.parsed.y
+              return v != null ? ` ${c.dataset.label}: ${v.toLocaleString()} DUSK` : null
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'category',
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: {
+            color: '#4a7a5a',
+            font: { size: 8, family: 'IBM Plex Mono' },
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 8,
+            callback: function(val, i) {
+              const blk = this.getLabelForValue(val)
+              // Mark epoch boundaries
+              const epochBlocks = 2160
+              const isEpoch = blk % epochBlocks === 0
+              if (isEpoch) return `#${Number(blk).toLocaleString()} E${Math.floor(blk/epochBlocks)+1}`
+              return `#${Number(blk).toLocaleString()}`
+            }
+          }
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: {
+            color: '#4a7a5a',
+            font: { size: 8, family: 'IBM Plex Mono' },
+            callback: v => v >= 1000 ? (v/1000).toFixed(1)+'k' : v
+          }
+        }
+      }
+    }
+  })
+}
+
+function _histRenderEvents() {
+  const el = document.getElementById('hist-events')
+  if (!el || !_histData) return
+  const events = (_histData.events || []).slice().reverse()
+
+  const topicColor = t => {
+    if (['liquidate','terminate','deactivate'].includes(t)) return 'var(--red)'
+    if (['activate'].includes(t)) return 'var(--green)'
+    return 'var(--yellow)'
+  }
+  const topicLabel = t => ({
+    activate: 'activate', deactivate: 'deactivate',
+    liquidate: 'liquidate', terminate: 'terminate',
+    deposit: 'deposit race', reward: 'reward recycled',
+  }[t] || t)
+
+  const rows = events
+    .filter(e => e.idx === null ? Object.values(_histVisible).some(v=>v) : _histVisible[e.idx])
+    .slice(0, 50)
+    .map(e => {
+      const amt = e.amount_dusk != null
+        ? `<span style="margin-left:auto;color:${topicColor(e.topic)};">${
+            ['liquidate','terminate','deactivate'].includes(e.topic) ? '−' : '+'
+          }${Number(e.amount_dusk).toLocaleString(undefined,{maximumFractionDigits:4})} DUSK</span>`
+        : ''
+      return `<div style="display:flex;align-items:center;gap:7px;padding:2px 0;
+                          border-top:1px solid var(--border);">
+        <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;
+                     background:${topicColor(e.topic)};display:inline-block;"></span>
+        <span style="color:var(--dim);min-width:60px;">#${Number(e.block).toLocaleString()}</span>
+        <span style="color:${_histColors[e.idx]};min-width:20px;">p${e.idx}</span>
+        <span style="color:var(--dim);flex:1;">${topicLabel(e.topic)}</span>
+        ${amt}
+      </div>`
+    }).join('')
+
+  el.innerHTML = rows || '<span style="color:var(--dim);">no events in range</span>'
+}
+
+// Poll history every 30s when tab is visible
+setInterval(() => {
+  if (document.getElementById('prov-content-history')?.style.display !== 'none') {
+    _histLoad()
+  }
+}, 30000)
 
 </script>
 
@@ -3044,6 +3304,8 @@ _pollRotation()
 
       <label style="font-size:11px;color:var(--muted);">Gas Limit<br><span style="font-size:10px;color:var(--dim)">applied to every state-changing wallet command (default 2000000)</span></label>
       <input class="modal-input" id="cfg-gas-limit" type="number" step="100000" min="100000" style="margin:0;" placeholder="2000000">
+      <label style="font-size:11px;color:var(--muted);margin-top:8px;">Gas Price (LUX)<br><span style="font-size:10px;color:var(--dim)">first flag passed to every wallet command (default 1)</span></label>
+      <input class="modal-input" id="cfg-gas-price" type="number" step="1" min="1" style="margin:0;" placeholder="1">
     </div>
 
     <div id="cfg-status" style="font-size:11px;color:var(--green);min-height:18px;margin-top:10px;"></div>
@@ -3056,5 +3318,6 @@ _pollRotation()
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 </body>
 </html>

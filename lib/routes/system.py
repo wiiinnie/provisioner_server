@@ -79,8 +79,9 @@ def debug_wallet():
 
 @bp.route("/api/config", methods=["GET"])
 def get_config():
+    from ..config import _cfg as _current_cfg
     cfg("network_id")
-    safe = {k: v for k, v in _cfg.items() if not k.endswith("_sk")}
+    safe = {k: v for k, v in _current_cfg.items() if not k.endswith("_sk")}
     sks  = _load_sks()
     for i in range(3):
         safe[f"prov_{i}_sk_set"] = bool(sks.get(f"prov_{i}_sk"))
@@ -89,10 +90,11 @@ def get_config():
 
 @bp.route("/api/config", methods=["POST"])
 def set_config():
+    from ..config import _cfg as _current_cfg
     data    = request.get_json() or {}
-    current = dict(_cfg) if _cfg else dict(_CONFIG_DEFAULTS)
+    current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
-                  "master_idx","gas_limit","node_0_ws_port","node_1_ws_port","node_2_ws_port")
+                  "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port")
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk")
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address",
@@ -120,8 +122,9 @@ def set_config():
 
 @bp.route("/api/config/reset", methods=["POST"])
 def reset_config():
+    from ..config import _cfg as _current_cfg
     _save_config(dict(_CONFIG_DEFAULTS))
-    return jsonify({"ok":True,"config":_cfg})
+    return jsonify({"ok":True,"config":_current_cfg})
 
 
 @bp.route("/api/nodes/heights", methods=["GET"])
@@ -206,6 +209,19 @@ def debug_own_keys():
     return jsonify({"keys":list(_own_provisioner_keys)})
 
 
+# ── Stake history ─────────────────────────────────────────────────────────────
+
+@bp.route("/api/history/stake", methods=["GET"])
+def history_stake():
+    from ..assess import get_stake_history
+    try:
+        max_blocks = int(request.args.get("blocks", 2160))
+    except (ValueError, TypeError):
+        max_blocks = 2160
+    max_blocks = min(max_blocks, 15120)   # cap at 7d
+    return jsonify(get_stake_history(max_blocks))
+
+
 # ── RUES event stream ─────────────────────────────────────────────────────────
 
 @bp.route("/api/rues/status", methods=["GET"])
@@ -245,6 +261,15 @@ def deposit_log_clear():
 def race_counters():
     from ..events import get_race_counters
     return jsonify(get_race_counters())
+
+
+@bp.route("/api/events/fastpath", methods=["GET", "POST"])
+def events_fastpath():
+    from ..events import get_tx_included_fastpath, set_tx_included_fastpath
+    if request.method == "POST":
+        enabled = bool(request.json.get("enabled", False))
+        set_tx_included_fastpath(enabled)
+    return jsonify({"tx_included_fastpath": get_tx_included_fastpath()})
 
 
 # ── Rotation automation ───────────────────────────────────────────────────────
