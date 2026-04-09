@@ -137,6 +137,7 @@ _CONFIG_DEFAULTS = {
     "min_deposit_dusk":        100.0,
     "snatch_min_deposit_dusk": 100.0,
     "gas_limit":               2000000,
+    "gas_price":               1,
 }
 
 _cfg: dict       = {}
@@ -186,6 +187,7 @@ def CONTRACT_ADDRESS(): return cfg("contract_address") or CONTRACT_ID
 def OPERATOR_ADDRESS(): return cfg("operator_address")
 def NETWORK_ID():       return cfg("network_id") or 2
 def GAS_LIMIT():        return int(cfg("gas_limit") or 2000000)
+def GAS_PRICE():        return int(cfg("gas_price") or 1)
 
 # ── SK storage ─────────────────────────────────────────────────────────────────
 def _load_sks() -> dict:

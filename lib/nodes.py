@@ -126,6 +126,12 @@ def _ws_thread(node_idx: int) -> None:
                     if height:
                         with _node_heights_lock:
                             _node_heights[node_idx] = height
+                        _log(f"[node{node_idx}] height={height}")
+                        try:
+                            from .rotation import on_block as _on_block
+                            _on_block(height)
+                        except Exception as _e:
+                            _log(f"[node{node_idx}] on_block error: {_e}")
                 except Exception:
                     pass
 

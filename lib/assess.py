@@ -21,6 +21,152 @@ TOPUP_SLASH_RATE = 0.10
 _stake_cache:      dict = {}
 _stake_cache_lock        = threading.Lock()
 
+# ── Stake history snapshots ───────────────────────────────────────────────────
+import collections as _collections
+_HISTORY_MAXLEN          = 1008          # ~7d at 10-block cadence (90s/block)
+_stake_history: _collections.deque = _collections.deque(maxlen=_HISTORY_MAXLEN)
+_stake_history_lock      = threading.Lock()
+# Events are read directly from rues._event_log at query time — no separate store needed
+
+
+def _record_snapshot(block: int, nodes_by_idx: dict) -> None:
+    """Store a stake snapshot keyed by block height."""
+    if not block:
+        return
+    entry = {
+        "block": block,
+        "nodes": {
+            idx: {
+                "stake_dusk":  n.get("stake_dusk", 0.0),
+                "locked_dusk": n.get("locked_dusk", 0.0),
+                "reward_dusk": n.get("reward_dusk", 0.0),
+                "status":      n.get("status", "inactive"),
+            }
+            for idx, n in nodes_by_idx.items()
+        }
+    }
+    with _stake_history_lock:
+        _stake_history.append(entry)
+
+
+
+def get_stake_history(max_blocks: int = 2160) -> dict:
+    """Return snapshots and events within the last max_blocks blocks.
+    Events are pulled directly from rues._event_log and resolved to
+    provisioner indices via _stake_cache (no config address dependency).
+    """
+    with _stake_history_lock:
+        snaps = list(_stake_history)
+
+    if not snaps:
+        return {"snapshots": [], "events": []}
+
+    cutoff = snaps[-1]["block"] - max_blocks
+    snaps  = [s for s in snaps if s["block"] >= cutoff]
+
+    # Build address → idx map from stake cache.
+    # Build address → idx: config first (covers inactive nodes not in cache),
+    # then stake cache (covers live staking addresses).
+    addr_to_idx = {}
+    try:
+        from .config import NODE_INDICES, cfg as _cfg
+        for i in NODE_INDICES:
+            a = _cfg(f"prov_{i}_address") or ""
+            if a:
+                addr_to_idx[a] = i
+    except Exception:
+        pass
+    with _stake_cache_lock:
+        for idx, node in _stake_cache.items():
+            for field in ("address", "staking_address"):
+                addr = node.get(field) or ""
+                if addr:
+                    addr_to_idx[addr] = idx
+
+    # Event extraction strategy:
+    # Primary source: contract events (always have provisioner + amount).
+    # Enrichment: match tx/executed by (topic, amount_lux) to add block_height.
+    # This works even when _fn_args_decoded is missing from tx/executed entries.
+    evts = []
+    try:
+        from .rues import _event_log, _log_lock
+        _TOPIC_TO_FNNAME = {
+            "activate":   "stake_activate",
+            "liquidate":  "liquidate",
+            "terminate":  "terminate",
+            "deactivate": "stake_deactivate",
+            "unstake":    "sozu_unstake",
+        }
+        _CONTRACT_TOPICS = frozenset(_TOPIC_TO_FNNAME.keys())
+        _FNNAME_MAP = {v: k for k, v in _TOPIC_TO_FNNAME.items()}
+
+        with _log_lock:
+            raw_events = list(_event_log)
+
+        # Pass 1: tx/executed (err=null) → (fn_name, amount_lux_str) → block_height
+        # Also handles stake_activate where fn_dec.value is the amount
+        tx_block_lookup = {}   # (display_topic, amount_lux_str) → block_height
+        for entry in raw_events:
+            if entry.get("topic") != "tx/executed":
+                continue
+            decoded = entry.get("decoded") or {}
+            if decoded.get("err") is not None:
+                continue
+            inner   = decoded.get("inner") or decoded
+            call    = inner.get("call") or {}
+            fn_name = call.get("fn_name", "")
+            display_topic = _FNNAME_MAP.get(fn_name)
+            if not display_topic:
+                continue
+            block = int(decoded.get("block_height") or 0)
+            if not block:
+                continue
+            fn_dec = call.get("_fn_args_decoded") or {}
+            if isinstance(fn_dec, str):
+                amt_str = fn_dec
+            else:
+                amt_str = str(fn_dec.get("value") or fn_dec.get("amount_lux") or "")
+            if amt_str:
+                tx_block_lookup[(display_topic, amt_str)] = block
+
+        # Pass 2: contract events — canonical source for provisioner + amount
+        for entry in raw_events:
+            topic = entry.get("topic", "")
+            if topic not in _CONTRACT_TOPICS:
+                continue
+            decoded   = entry.get("decoded") or {}
+            # provisioner/provisioners field first — "account" is the tx sender,
+            # not the provisioner (e.g. unstake event: account=staker, provisioners=[our_prov])
+            prov_addr = decoded.get("provisioner") or ""
+            if not prov_addr:
+                provs = decoded.get("provisioners") or []
+                if provs:
+                    prov_addr = provs[0]
+            if not prov_addr:
+                prov_addr = decoded.get("account") or ""
+
+            amt = decoded.get("amount") or decoded.get("value")
+            amt_str = str(amt) if amt is not None else ""
+            try:
+                amt_dusk = int(amt_str) / 1e9 if amt_str else None
+            except Exception:
+                amt_dusk = None
+
+            # Enrich with block_height from tx/executed if available
+            block = tx_block_lookup.get((topic, amt_str), 0)
+
+            idx = addr_to_idx.get(prov_addr)
+            addr_short = (prov_addr[:10] + "…" + prov_addr[-6:]) if prov_addr else ""
+            evts.append({"block": block, "idx": idx, "topic": topic,
+                         "amount_dusk": amt_dusk, "addr_short": addr_short})
+
+    except Exception:
+        pass
+
+    evts.sort(key=lambda e: e["block"])
+    return {"snapshots": snaps, "events": evts}
+
+
 # ── _assess_state cache ────────────────────────────────────────────────────────
 _ASSESS_CACHE_SECS: int      = 90
 _assess_cache_result: dict   = {}
@@ -31,10 +177,36 @@ _own_provisioner_keys: list  = []
 _own_provisioner_keys_lock   = threading.Lock()
 
 
-def _invalidate_assess_cache() -> None:
-    global _assess_cache_ts
-    with _assess_cache_lock:
-        _assess_cache_ts = 0.0
+# ── Capacity cache ─────────────────────────────────────────────────────────────
+_CAPACITY_CACHE_SECS: int    = 60
+_capacity_cache_result: dict = {}
+_capacity_cache_ts: float    = 0.0
+_capacity_cache_lock         = threading.Lock()
+
+
+def _invalidate_capacity_cache() -> None:
+    global _capacity_cache_ts
+    with _capacity_cache_lock:
+        _capacity_cache_ts = 0.0
+
+
+def _fetch_capacity_cached(pw: str, force: bool = False) -> dict:
+    global _capacity_cache_result, _capacity_cache_ts
+    with _capacity_cache_lock:
+        age = time.time() - _capacity_cache_ts
+        if not force and _capacity_cache_result and age < _CAPACITY_CACHE_SECS:
+            return dict(_capacity_cache_result)
+    result = _fetch_capacity(pw)
+    with _capacity_cache_lock:
+        _capacity_cache_result = dict(result)
+        _capacity_cache_ts     = time.time()
+    return result
+
+
+def _invalidate_all_caches() -> None:
+    """Call on activate events — stake state and capacity both changed."""
+    _invalidate_assess_cache()
+    _invalidate_capacity_cache()
 
 
 def _assess_state_cached(tip: int, pw: str, force: bool = False) -> dict:
@@ -154,9 +326,11 @@ def _assess_state(tip: int, pw: str) -> dict:
             else:
                 status, ta = "inactive", None
 
+        si_account = entry.get("account", "") if entry else ""
         node = {
             "idx":               idx,
-            "address":           addr,
+            "address":           addr or si_account,
+            "staking_address":   si_account,
             "status":            status,
             "ta":                ta,
             "stake_dusk":        stake_dusk,
@@ -182,6 +356,21 @@ def _assess_state(tip: int, pw: str) -> dict:
     maturing = [n for n in nodes_by_idx.values() if n["status"] in ("maturing", "seeded")]
     inactive = [n for n in nodes_by_idx.values() if n["status"] == "inactive"]
     label    = f"A:{len(active)} M:{len(maturing)} I:{len(inactive)}"
+
+    # Record snapshot for history tab (non-blocking, best-effort)
+    try:
+        real_tip = tip
+        if not real_tip:
+            try:
+                from .nodes import get_heights
+                hs = get_heights()
+                real_tip = max((v for v in hs.values() if v), default=0)
+            except Exception:
+                pass
+        _record_snapshot(real_tip, nodes_by_idx)
+    except Exception:
+        pass
+
     return {
         "active": active, "maturing": maturing, "inactive": inactive,
         "by_idx": nodes_by_idx, "label": label,
@@ -260,7 +449,7 @@ def parse_stake_info(output: str, current_tip: int = 0) -> dict:
 
     if result["active_epoch"] is not None and current_tip > 0:
         stake_epoch   = result["active_epoch"] - 2
-        current_epoch = current_tip // EPOCH_BLOCKS
+        current_epoch = current_tip // EPOCH_BLOCKS + 1
         result["transitions"] = max(0, current_epoch - stake_epoch)
     else:
         m3 = re.search(r"(?:epoch\s+transitions?|counter)[\s:]+(\d+)", output, re.IGNORECASE)
@@ -273,7 +462,7 @@ def parse_stake_info(output: str, current_tip: int = 0) -> dict:
             result["status"] = "active"
         else:
             stake_epoch   = result["active_epoch"] - 2
-            current_epoch = current_tip // EPOCH_BLOCKS
+            current_epoch = current_tip // EPOCH_BLOCKS + 1
             seen = max(0, current_epoch - stake_epoch)
             result["transitions"] = seen
             result["status"] = "seeded" if seen == 0 else "maturing"

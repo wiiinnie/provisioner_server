@@ -93,14 +93,18 @@ def run_cmd(cmd: str, timeout: int = 30) -> dict:
                 "cmd": cmd, "ts": datetime.now().isoformat()}
 
 # ── wallet_cmd ────────────────────────────────────────────────────────────────
-def wallet_cmd(subcmd: str, timeout: int = 30, password: str = "") -> dict:
+def wallet_cmd(subcmd: str, timeout: int = 30, password: str = "", gas_limit: int = 0) -> dict:
     """Run a command using the PROVISIONER wallet (~/sozu_provisioner)."""
+    from .config import GAS_PRICE, GAS_LIMIT
+    gp_flag      = f" --gas-price {GAS_PRICE()}"
+    effective_gl = gas_limit if gas_limit > 0 else GAS_LIMIT()
+    gl_flag      = f" --gas-limit {effective_gl}"
     if password:
         safe_pw = password.replace("'", "'\\''")
-        inner   = f"{WALLET_BIN} -w {WALLET_PATH} --password '{safe_pw}' {subcmd}"
-        log_cmd = f"{WALLET_BIN} -w {WALLET_PATH} --password '***' {subcmd}"
+        inner   = f"{WALLET_BIN} --password '{safe_pw}'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
+        log_cmd = f"{WALLET_BIN} --password '***'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
     else:
-        inner   = f"{WALLET_BIN} -w {WALLET_PATH} {subcmd}"
+        inner   = f"{WALLET_BIN}{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
         log_cmd = inner
     with _wallet_lock:
         result = run_cmd(inner, timeout=timeout)
@@ -141,13 +145,16 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
       pool / stake-info / substrate → _rotation_lock  (time-critical)
       everything else               → _wallet_lock
     """
-    gl_flag = f" --gas-limit {gas_limit}" if gas_limit > 0 else ""
+    from .config import GAS_PRICE, GAS_LIMIT
+    gp_flag      = f" --gas-price {GAS_PRICE()}"
+    effective_gl = gas_limit if gas_limit > 0 else GAS_LIMIT()
+    gl_flag      = f" --gas-limit {effective_gl}"
     if password:
         safe_pw = password.replace("'", "'\\''")
-        cmd     = f"{WALLET_BIN} --password '{safe_pw}'{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
-        log_cmd = f"{WALLET_BIN} --password '***'{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
+        cmd     = f"{WALLET_BIN} --password '{safe_pw}'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
+        log_cmd = f"{WALLET_BIN} --password '***'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
     else:
-        cmd     = f"{WALLET_BIN}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
+        cmd     = f"{WALLET_BIN}{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
         log_cmd = cmd
 
     _stripped = subcmd.strip()

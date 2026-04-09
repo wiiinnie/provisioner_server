@@ -24,11 +24,11 @@ _sub_results: dict = {}
 _sub_lock          = threading.Lock()
 _state_lock        = threading.Lock()
 
-_event_log: deque = deque(maxlen=500)
+_event_log: deque = deque(maxlen=1000)
 _log_lock          = threading.Lock()
 
 # Raw frame log — stores every WS message regardless of parse success
-_raw_log: deque = deque(maxlen=200)
+_raw_log: deque = deque(maxlen=1000)
 _raw_log_lock     = threading.Lock()
 
 # ── Tx confirmation registry ──────────────────────────────────────────────────
@@ -322,20 +322,67 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
     if topic == "tx/executed" and isinstance(decoded, dict):
         try:
             inner   = decoded.get("inner") or decoded
-            fn_name = (inner.get("call") or {}).get("fn_name", "")
-            if fn_name and decoded.get("err") is None:
-                _signal_tx_confirms(fn_name)
-        except Exception:
-            pass
+            call    = inner.get("call") or {}
+            fn_name = call.get("fn_name", "")
+            err     = decoded.get("err")
+            # Always log fn_name so we can see what arrives (helps debug mismatches)
+            _log(f"[rues] tx/executed fn_name={fn_name!r} err={err!r} "
+                 f"waiting={list(_tx_confirm.keys())}")
+            if fn_name and err is None:
+                _signal_tx_confirms(fn_name, decoded)  # was missing decoded arg
+            # Decode fn_args into tx/executed entry so history events can read amount
+            # (tx/included gets decoded via fastpath, tx/executed is separate — copy here)
+            if fn_name and err is None and "_fn_args_decoded" not in call:
+                fn_args = call.get("fn_args", "")
+                if fn_args:
+                    try:
+                        from .routes.system import _decode_fn_args as _dfa
+                        result = _dfa(fn_name, fn_args)
+                        if result:
+                            call["_fn_args_decoded"] = result
+                    except Exception:
+                        pass
+        except Exception as _sig_err:
+            _log(f"[rues] tx/executed signal error: {_sig_err}")
 
     # Fire rotation engine on every confirmed block
     if topic == "block_accepted" and height:
         try:
             from .rotation import on_block
-            from .wallet import get_password
-            on_block(height, get_password() or "")
+            on_block(height)
         except Exception as _rot_err:
             _log(f"[rotation] on_block error: {_rot_err}")
+
+    # Feed sweeper delta tracker for deposit/reward/activate events
+    try:
+        from .rotation import sweep_on_event
+        sweep_on_event(topic, decoded)
+    except Exception:
+        pass
+
+
+    # tx/included: always call handler (cache warming runs regardless of toggle;
+    # race firing only happens when get_tx_included_fastpath() is True)
+    if topic == "tx/included" and isinstance(decoded, dict):
+        try:
+            from .events import _handle_tx_included_fastpath, _on_tx_included_own, _on_tx_included_competitor
+            inner    = decoded.get("inner") or decoded
+            call     = inner.get("call") or {}
+            fn_name  = call.get("fn_name", "")
+            # Cache warming + optional race for deposit/reward tx/included
+            if fn_name in ("deposit", "stake", "recycle", "terminate", "sozu_unstake", "sozu_stake"):
+                _handle_tx_included_fastpath(decoded, height)
+            # Reaction time tracking for stake_activate (ours + competitors)
+            if fn_name == "stake_activate":
+                prov_decoded = call.get("_fn_args_decoded") or {}
+                prov_addr    = (prov_decoded.get("keys") or {}).get("account") or ""
+                amount_lux   = int(str(prov_decoded.get("value") or 0))
+                amount_dusk  = amount_lux / 1e9
+                if prov_addr:
+                    _on_tx_included_own(prov_addr)
+                    _on_tx_included_competitor(prov_addr, amount_dusk)
+        except Exception:
+            pass
 
 
 
