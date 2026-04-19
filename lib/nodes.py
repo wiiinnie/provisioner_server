@@ -44,7 +44,7 @@ def _ws_thread(node_idx: int) -> None:
 
     backoff = 2
     while True:
-        port = int(cfg(f"node_{node_idx}_ws_port") or [8080, 8282, 8383][node_idx])
+        port = int(cfg(f"node_{node_idx}_ws_port") or [8080, 8282, 8383, 8484][node_idx])
         url  = f"ws://localhost:{port}/on"
         try:
             ws = _ws.create_connection(url, timeout=10, ping_interval=0)

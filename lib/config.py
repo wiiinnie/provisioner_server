@@ -44,7 +44,7 @@ OPERATOR_WALLET = os.path.expanduser("~/sozu_operator")
 NETWORK         = "testnet"   # change to "mainnet" to go live
 _NET            = f"-n {NETWORK}"
 RUSK_VERSION    = "1.5"
-NODE_INDICES    = [0, 1, 2]
+NODE_INDICES    = [0, 1, 2, 3]
 PORT            = 7373
 
 # ── sozu-wallet config.toml reader ────────────────────────────────────────────
@@ -123,12 +123,15 @@ _CONFIG_DEFAULTS = {
     "prov_0_address":          "",
     "prov_1_address":          "",
     "prov_2_address":          "",
+    "prov_3_address":          "",
     "node_0_log":              "/var/log/rusk-1.log",
     "node_1_log":              "/var/log/rusk-2.log",
     "node_2_log":              "/var/log/rusk-3.log",
+    "node_3_log":              "/var/log/rusk-4.log",
     "node_0_ws_port":          8080,
     "node_1_ws_port":          8282,
     "node_2_ws_port":          8383,
+    "node_3_ws_port":          8484,
     "rotation_window":         41,
     "snatch_window":           11,
     "backfill_blocks":         200,

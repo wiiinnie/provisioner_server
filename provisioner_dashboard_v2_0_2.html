@@ -794,6 +794,9 @@
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
         <div id="node2-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 2</div>
         <div id="node2-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
+
+        <div id="node3-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 3</div>
+        <div id="node3-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
       </div>
     </div>
 
@@ -1491,7 +1494,7 @@ function renderNodeCard(idx, node, container, syncInfo, si) {
 function renderAllProvCards() {
   const sync = {}   // no syncInfo needed here — fetchLivePanel handles that path
   const masterIdx = (_cfg && _cfg.master_idx !== undefined) ? parseInt(_cfg.master_idx) : -1
-  for (const i of [0, 1, 2]) {
+  for (const i of [0, 1, 2, 3]) {
     const container = document.getElementById(`node${i}-body`)
     if (!container) continue
     // Sync header master label + radio
@@ -1527,7 +1530,7 @@ function updateLivePanel(data) {
   const sync      = data.sync  || {}
   const tip       = data.tip
   const masterIdx = (_cfg && _cfg.master_idx !== undefined) ? parseInt(_cfg.master_idx) : -1
-  for (const idx of [0, 1, 2]) {
+  for (const idx of [0, 1, 2, 3]) {
     const hdr = document.getElementById(`node${idx}-header`)
     if (hdr) {
       const isMaster = (masterIdx === idx)
@@ -1761,6 +1764,8 @@ async function loadConfig() {
       document.getElementById('cfg-node0-ws-port').value = _cfg.node_0_ws_port ?? 8080
       document.getElementById('cfg-node1-ws-port').value = _cfg.node_1_ws_port ?? 8282
       document.getElementById('cfg-node2-ws-port').value = _cfg.node_2_ws_port ?? 8383
+    document.getElementById('cfg-node3-log').value = _cfg.node_3_log || '/var/log/rusk-4.log'
+    document.getElementById('cfg-node3-ws-port').value = _cfg.node_3_ws_port ?? 8484
     }
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11
@@ -1777,26 +1782,14 @@ async function loadConfig() {
     if (swEl) swEl.checked = !!_cfg.sweeper_enabled
     // Rotation config fields
     document.getElementById('cfg-master-idx').value = _cfg.master_idx ?? -1
+    document.getElementById('cfg-prov-0-address').value = _cfg.prov_0_address || ''
+    document.getElementById('cfg-prov-1-address').value = _cfg.prov_1_address || ''
+    document.getElementById('cfg-prov-2-address').value = _cfg.prov_2_address || ''
+    document.getElementById('cfg-prov-3-address').value = _cfg.prov_3_address || ''
     // Show addresses from config immediately as fallback, then try auto-detect from wallet
     const _fmt = a => a ? a.slice(0,12)+'…'+a.slice(-6) : '—'
-    const d0 = document.getElementById('cfg-prov0-addr-display')
-    const d1 = document.getElementById('cfg-prov1-addr-display')
-    const d2 = document.getElementById('cfg-prov2-addr-display')
-    if (d0) d0.textContent = _fmt(_cfg.prov_0_address || '')
-    if (d1) d1.textContent = _fmt(_cfg.prov_1_address || '')
-    if (d2) d2.textContent = _fmt(_cfg.prov_2_address || '')
     // Auto-detect from wallet — updates display if wallet returns addresses
-    fetch(`${API}/api/provisioner/addresses`, {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({password: getPassword()})
-    }).then(r=>r.json()).then(d=>{
-      const a0 = d.addresses?.['0'] || ''
-      const a1 = d.addresses?.['1'] || ''
-      const a2 = d.addresses?.['2'] || ''
-      if (d0 && a0) d0.textContent = _fmt(a0)
-      if (d1 && a1) d1.textContent = _fmt(a1)
-      if (d2 && a2) d2.textContent = _fmt(a2)
-    }).catch(()=>{})
+
 
     // Show/hide warning banner
   } catch(e) {
@@ -1815,9 +1808,15 @@ async function saveConfig() {
     node_0_ws_port:       parseInt(document.getElementById('cfg-node0-ws-port')?.value) || 8080,
     node_1_ws_port:       parseInt(document.getElementById('cfg-node1-ws-port')?.value) || 8282,
     node_2_ws_port:       parseInt(document.getElementById('cfg-node2-ws-port')?.value) || 8383,
+    node_3_log:           document.getElementById('cfg-node3-log')?.value?.trim() || '/var/log/rusk-4.log',
+    node_3_ws_port:       parseInt(document.getElementById('cfg-node3-ws-port')?.value) || 8484,
     rotation_window:      parseInt(document.getElementById('cfg-rotation').value),
     snatch_window:        parseInt(document.getElementById('cfg-snatch').value),
     backfill_blocks:      parseInt(document.getElementById('cfg-backfill').value),
+    prov_0_address:        document.getElementById('cfg-prov-0-address').value.trim(),
+    prov_1_address:        document.getElementById('cfg-prov-1-address').value.trim(),
+    prov_2_address:        document.getElementById('cfg-prov-2-address').value.trim(),
+    prov_3_address:        document.getElementById('cfg-prov-3-address').value.trim(),
     master_threshold_pct: parseFloat(document.getElementById('cfg-master-threshold-pct').value || '15'),
     telegram_chat_id:     document.getElementById('cfg-telegram-chatid').value.trim(),
     min_deposit_dusk:     parseFloat(document.getElementById('cfg-min-deposit').value || '100'),
@@ -2449,7 +2448,7 @@ function _ruesToggleMine() {
 function _ownAddrs() {
   if (!_cfg) return []
   return [_cfg.operator_address,_cfg.prov_0_address,
-          _cfg.prov_1_address,_cfg.prov_2_address].filter(Boolean)
+          _cfg.prov_1_address,_cfg.prov_2_address,_cfg.prov_3_address].filter(Boolean)
 }
 
 function _containsOwnAddr(text) {
@@ -2589,7 +2588,7 @@ async function _pollRues() {
           if (_cfg) {
             const ownAddrs = [
               _cfg.operator_address, _cfg.prov_0_address,
-              _cfg.prov_1_address,   _cfg.prov_2_address,
+              _cfg.prov_1_address,   _cfg.prov_2_address,   _cfg.prov_3_address,
             ].filter(Boolean)
             for (const addr of ownAddrs) {
               const esc = addr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -2756,7 +2755,7 @@ async function _pollRues() {
               let detailHtml = parts.join(sep)
               // Highlight own addresses in the detail line
               if (_cfg) {
-                const ownAddrs = [_cfg.operator_address,_cfg.prov_0_address,_cfg.prov_1_address,_cfg.prov_2_address].filter(Boolean)
+                const ownAddrs = [_cfg.operator_address,_cfg.prov_0_address,_cfg.prov_1_address,_cfg.prov_2_address,_cfg.prov_3_address].filter(Boolean)
                 for (const addr of ownAddrs) {
                   const esc = addr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
                   detailHtml = detailHtml.replace(new RegExp(esc,'g'),
@@ -3257,15 +3256,24 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Node 2 WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
       <input class="modal-input" id="cfg-node2-ws-port" type="number" style="margin:0;" placeholder="8383">
 
+      <label style="font-size:11px;color:var(--muted);">Node 3 Log<br><span style="font-size:10px;color:var(--dim)">/var/log/rusk-4.log</span></label>
+      <input class="modal-input" id="cfg-node3-log" type="text" style="margin:0;" placeholder="/var/log/rusk-4.log">
+
+      <label style="font-size:11px;color:var(--muted);">Node 3 WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
+      <input class="modal-input" id="cfg-node3-ws-port" type="number" style="margin:0;" placeholder="8484">
+
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Rotation</label>
-      <label style="font-size:11px;color:var(--muted);">Prov 0 Address<br><span style="font-size:10px;color:var(--dim)">auto-detected from wallet</span></label>
-      <span id="cfg-prov0-addr-display" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);">—</span>
+      <label style="font-size:11px;color:var(--muted);">Prov 0 Address</label>
+      <input class="modal-input" id="cfg-prov-0-address" type="text" style="margin:0;" placeholder="BLS key…">
 
-      <label style="font-size:11px;color:var(--muted);">Prov 1 Address<br><span style="font-size:10px;color:var(--dim)">auto-detected from wallet</span></label>
-      <span id="cfg-prov1-addr-display" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);">—</span>
+      <label style="font-size:11px;color:var(--muted);">Prov 1 Address</label>
+      <input class="modal-input" id="cfg-prov-1-address" type="text" style="margin:0;" placeholder="BLS key…">
 
-      <label style="font-size:11px;color:var(--muted);">Prov 2 Address<br><span style="font-size:10px;color:var(--dim)">auto-detected from wallet</span></label>
-      <span id="cfg-prov2-addr-display" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);">—</span>
+      <label style="font-size:11px;color:var(--muted);">Prov 2 Address</label>
+      <input class="modal-input" id="cfg-prov-2-address" type="text" style="margin:0;" placeholder="BLS key…">
+
+      <label style="font-size:11px;color:var(--muted);">Prov 3 Address</label>
+      <input class="modal-input" id="cfg-prov-3-address" type="text" style="margin:0;" placeholder="BLS key…">
 
 
 

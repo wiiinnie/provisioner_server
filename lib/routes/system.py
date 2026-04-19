@@ -83,7 +83,7 @@ def get_config():
     cfg("network_id")
     safe = {k: v for k, v in _current_cfg.items() if not k.endswith("_sk")}
     sks  = _load_sks()
-    for i in range(3):
+    for i in range(4):
         safe[f"prov_{i}_sk_set"] = bool(sks.get(f"prov_{i}_sk"))
     return jsonify(safe)
 
@@ -94,12 +94,12 @@ def set_config():
     data    = request.get_json() or {}
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
-                  "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port")
+                  "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port")
     bool_keys  = ("sweeper_enabled",)
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct")
     str_keys   = ("contract_address","operator_address",
-                  "prov_0_address","prov_1_address","prov_2_address",
-                  "node_0_log","node_1_log","node_2_log",
+                  "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
+                  "node_0_log","node_1_log","node_2_log","node_3_log",
                   "telegram_bot_token","telegram_chat_id")
     for k in int_keys:
         if k in data:
@@ -117,7 +117,7 @@ def set_config():
     if sk_updated: _save_sks(sks)
     safe = {k:v for k,v in current.items() if not k.endswith("_sk")}
     sks_now = _load_sks()
-    for i in range(3): safe[f"prov_{i}_sk_set"] = bool(sks_now.get(f"prov_{i}_sk"))
+    for i in range(4): safe[f"prov_{i}_sk_set"] = bool(sks_now.get(f"prov_{i}_sk"))
     return jsonify({"ok":True,"config":safe})
 
 

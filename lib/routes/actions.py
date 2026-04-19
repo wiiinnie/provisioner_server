@@ -46,15 +46,26 @@ def _wait_next_block(known_tip: int, timeout_s: int = 60) -> bool:
 
 
 def _parse_profiles_addresses(output: str) -> dict:
+    """Parse sozu-wallet profiles output.
+    Supports both formats:
+      New: '0: rFHBm9m...'
+      Old: 'Profile 1\n  Public account - rFHBm9m...'
+    """
     import re as _re
-    result, current_profile = {}, None
+    result = {}
     for line in output.splitlines():
-        m = _re.match(r'\s*Profile\s+(\d+)', line)
+        # New format: "N: address"
+        m = _re.match(r'^\s*(\d+):\s+([A-Za-z0-9]{40,})', line)
         if m:
-            current_profile = int(m.group(1)) - 1
-        m2 = _re.match(r'\s*Public account\s+-\s+([A-Za-z0-9]{40,})', line)
-        if m2 and current_profile is not None:
-            result[current_profile] = m2.group(1).strip()
+            result[int(m.group(1))] = m.group(2).strip()
+            continue
+        # Old format: "Profile N" then "Public account - address"
+        m2 = _re.match(r'\s*Profile\s+(\d+)', line)
+        if m2:
+            _cur = int(m2.group(1)) - 1
+        m3 = _re.match(r'\s*Public account\s+-\s+([A-Za-z0-9]{40,})', line)
+        if m3 and '_cur' in dir():
+            result[_cur] = m3.group(1).strip()
     return result
 
 
@@ -68,57 +79,8 @@ def provisioner_list():
 def provisioner_addresses():
     pw = (request.get_json(silent=True) or {}).get("password", get_password())
 
-    # Single stake-info call returns provisioners in index order (0, 1, 2)
-    # Try assess cache first; fall back to direct stake-info parse by position
-    addrs = {}
-    try:
-        from .assess import _assess_state_cached
-        st    = _assess_state_cached(0, pw)
-        nodes = st.get("by_idx", {})
-        for idx in NODE_INDICES:
-            node = nodes.get(idx) or {}
-            addrs[str(idx)] = node.get("staking_address", "") or cfg(f"prov_{idx}_address") or ""
-    except Exception:
-        pass
-
-    # If any address missing, parse stake-info output directly by position
-    if not all(addrs.get(str(i)) for i in NODE_INDICES):
-        try:
-            import json as _json
-            from .wallet import operator_cmd as _op, get_password as _gpw
-            from .config import _NET
-            r = _op(f"{_NET} stake-info --format json", timeout=30, password=pw or _gpw() or "")
-            raw = (r.get("stdout") or r.get("stderr") or "").strip()
-            if raw.startswith("{"):
-                data  = _json.loads(raw)
-                provs = data.get("provisioners") or []
-                for i, p in enumerate(provs):
-                    if i in NODE_INDICES:
-                        acct = p.get("account", "")
-                        if acct and not addrs.get(str(i)):
-                            addrs[str(i)] = acct
-        except Exception:
-            pass
-
-    # Fill any still-missing from config
-    for idx in NODE_INDICES:
-        if not addrs.get(str(idx)):
-            addrs[str(idx)] = cfg(f"prov_{idx}_address") or ""
-
-    # Persist any newly detected addresses back to config
-    try:
-        changed = False
-        current = _load_config()
-        for idx in NODE_INDICES:
-            live = addrs.get(str(idx), "")
-            if live and live != current.get(f"prov_{idx}_address", ""):
-                current[f"prov_{idx}_address"] = live
-                changed = True
-        if changed:
-            _save_config(current)
-    except Exception:
-        pass
-
+    # Read addresses directly from config — set manually via dashboard
+    addrs = {str(idx): cfg(f"prov_{idx}_address") or "" for idx in NODE_INDICES}
     return jsonify({"ok": True, "addresses": addrs, "operator": OPERATOR_ADDRESS()})
 
 

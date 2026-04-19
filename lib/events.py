@@ -87,7 +87,7 @@ def _now_ts() -> str:
 
 def _own_addresses() -> set:
     addrs = set()
-    for k in ("prov_0_address", "prov_1_address", "prov_2_address"):
+    for k in ("prov_0_address", "prov_1_address", "prov_2_address", "prov_3_address"):
         v = cfg(k)
         if v:
             addrs.add(v)

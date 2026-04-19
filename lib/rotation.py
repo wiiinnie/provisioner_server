@@ -276,9 +276,22 @@ def _master_idx() -> int:
     return int(v) if v is not None else -1
 
 
+def _master_indices() -> list[int]:
+    """Return all indices excluded from rotation (masters + standbys)."""
+    primary = _master_idx()
+    # prov0 = primary master, prov1 = standby master — both excluded from rotation
+    # Standbys are any configured index below the first rotation node (idx < 2)
+    excluded = set()
+    if primary >= 0:
+        excluded.add(primary)
+    excluded.add(1)  # prov1 always standby — never rotated
+    return sorted(excluded)
+
+
 def _rot_indices() -> list[int]:
     from .config import NODE_INDICES
-    return [i for i in NODE_INDICES if i != _master_idx()]
+    excl = set(_master_indices())
+    return [i for i in NODE_INDICES if i not in excl]
 
 
 def _pw() -> str:
