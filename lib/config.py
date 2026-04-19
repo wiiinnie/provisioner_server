@@ -133,7 +133,9 @@ _CONFIG_DEFAULTS = {
     "snatch_window":           11,
     "backfill_blocks":         200,
     "master_idx":              -1,
-    "master_stake_pct":        0.75,
+    "master_threshold_pct":    15.0,   # alert when prov0 stake < X% of active_maximum
+    "telegram_bot_token":      "",
+    "telegram_chat_id":        "",
     "min_deposit_dusk":        100.0,
     "snatch_min_deposit_dusk": 100.0,
     "gas_limit":               2000000,

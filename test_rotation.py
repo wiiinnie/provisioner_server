@@ -525,14 +525,140 @@ def scenario_liquidate_fails():
 
 # ── Runner ─────────────────────────────────────────────────────────────────────
 
+# ── Capacity mock helper ──────────────────────────────────────────────────────
+
+_cap_mock = {
+    "active_current": 427000.0, "active_maximum": 3000000.0,
+    "locked_current": 0.0,      "locked_maximum": 60000.0,
+}
+
+def _set_capacity(active_current, active_maximum=3000000.0, locked_current=0.0):
+    global _cap_mock
+    _cap_mock = {
+        "active_current": active_current, "active_maximum": active_maximum,
+        "locked_current": locked_current, "locked_maximum": 60000.0,
+    }
+    assess_mod._fetch_capacity_cached = lambda pw="", force=False: dict(_cap_mock)
+    assess_mod._fetch_capacity        = lambda pw="": dict(_cap_mock)
+    assess_mod._invalidate_capacity_cache = lambda: None
+
+def _reset_capacity():
+    _set_capacity(427000.0)
+
+
+# ── New assess states ─────────────────────────────────────────────────────────
+
+def _a1m1_at_max(am):
+    n1 = am._node(1, "active",   0, stake=2848531.0, locked=1197.0, reward=116.0)
+    n2 = am._node(2, "maturing", 1, stake=1000.0,    locked=0.0,    reward=0.0)
+    am._state = {
+        "active": [n1], "maturing": [n2], "inactive": [],
+        "by_idx": {1: n1, 2: n2}, "label": "A:1 M:1 I:0",
+        "epoch": 1430, "remaining_blocks": 41,
+    }
+
+def _a1_inactive_at_max(am):
+    n1 = am._node(1, "active",   0, stake=2998999.0, locked=0.0, reward=108.0)
+    n2 = am._node(2, "inactive", None, stake=0.0)
+    am._state = {
+        "active": [n1], "maturing": [], "inactive": [n2],
+        "by_idx": {1: n1, 2: n2}, "label": "A:1 M:0 I:1",
+        "epoch": 1430, "remaining_blocks": 500,
+    }
+
+
+# ── New scenarios ─────────────────────────────────────────────────────────────
+
+def scenario_rotation_at_max_capacity():
+    print(f"\n{CYN}▶ Scenario 8: Rotation at max capacity — step 3 not capped{RST}")
+    _reset()
+    _a1m1_at_max(assess_m)
+    _set_capacity(active_current=3000000.0)
+    _patch_rotation()
+
+    _drive_to_rotation_window()
+
+    liq_ok = _cmds_contain("liquidate")
+    liq_ok and _ok("liquidate fired") or _fail("liquidate NOT fired")
+    _cmds_contain("terminate") and _ok("terminate fired") or _fail("terminate NOT fired")
+
+    activate_calls = [c for c in cmd_log.calls if "stake-activate" in c]
+    len(activate_calls) >= 1 \
+        and _ok(f"stake-activate fired ({len(activate_calls)}x) — capacity did not block rotation") \
+        or  _fail("stake-activate NOT fired — capacity wrongly blocked rotation")
+
+    import re
+    alloc_call = next((c for c in cmd_log.calls if "stake-activate" in c and "prov2" in c), "")
+    if alloc_call:
+        m = re.search(r"--amount (\d+)", alloc_call)
+        if m:
+            alloc_dusk = int(m.group(1)) / 1e9
+            expected   = 2848531.0 + 1197.0 + 116.0 - 1000.0
+            abs(alloc_dusk - expected) < 1.0 \
+                and _ok(f"alloc amount correct: {alloc_dusk:,.2f} DUSK") \
+                or  _fail(f"alloc amount wrong: {alloc_dusk:,.2f} (expected {expected:,.2f})")
+
+    state = rot._rotation_state["state"]
+    state == rot.ROTATING and _ok(f"final state: {state}") or _fail(f"wrong state: {state}")
+    _reset_capacity()
+    _info(f"commands: {[c.split()[0] for c in cmd_log.calls]}")
+
+
+def scenario_sweeper_skips_at_max():
+    print(f"\n{CYN}▶ Scenario 9: Sweeper skips when capacity full{RST}")
+    _reset()
+    assess_m.healthy_a1m1()
+    _set_capacity(active_current=3000000.0)
+    pool_mod._pool_fetch_real = lambda pw="": 5000.0
+    _patch_rotation()
+
+    epoch_base = (3_086_400 // rot.EPOCH_BLOCKS) * rot.EPOCH_BLOCKS
+    rot.on_block(epoch_base + rot.EPOCH_BLOCKS - 500)
+    time.sleep(0.4)
+    rot.on_block(epoch_base + rot.EPOCH_BLOCKS - 490)
+    time.sleep(0.4)
+
+    not _cmds_contain("stake-activate") \
+        and _ok("sweeper correctly skipped — capacity full") \
+        or  _fail("sweeper fired despite capacity full")
+
+    _reset_capacity()
+    _info(f"commands: {[c.split()[0] for c in cmd_log.calls]}")
+
+
+def scenario_seed_skips_at_max():
+    print(f"\n{CYN}▶ Scenario 10: State check skips seeding when capacity full{RST}")
+    _reset()
+    _a1_inactive_at_max(assess_m)
+    _set_capacity(active_current=3000000.0)
+    pool_mod._pool_fetch_real = lambda pw="": 500.0
+    _patch_rotation()
+
+    epoch_base = (3_086_400 // rot.EPOCH_BLOCKS) * rot.EPOCH_BLOCKS
+    rot.on_block(epoch_base + rot.EPOCH_BLOCKS - 500)
+    time.sleep(0.5)
+
+    not _cmds_contain("stake-activate") \
+        and _ok("seeding correctly skipped — capacity full") \
+        or  _fail("seeding fired despite capacity full")
+
+    _reset_capacity()
+    _info(f"commands: {[c.split()[0] for c in cmd_log.calls]}")
+
+
+# ── Scenario registry ─────────────────────────────────────────────────────────
+
 SCENARIOS = {
-    "normal":       scenario_normal_rotation,
-    "a2":           scenario_a2_recovery,
-    "step3_fail":   scenario_step3_alloc_fail,
-    "precheck_skip":scenario_precheck_skip_ta2,
-    "seed_inactive":scenario_seed_inactive,
-    "bootstrap":    scenario_bootstrap_all_inactive,
-    "liq_fail":     scenario_liquidate_fails,
+    "normal":           scenario_normal_rotation,
+    "a2":               scenario_a2_recovery,
+    "step3_fail":       scenario_step3_alloc_fail,
+    "precheck_skip":    scenario_precheck_skip_ta2,
+    "seed_inactive":    scenario_seed_inactive,
+    "bootstrap":        scenario_bootstrap_all_inactive,
+    "liq_fail":         scenario_liquidate_fails,
+    "rotation_max_cap": scenario_rotation_at_max_capacity,
+    "sweeper_max_cap":  scenario_sweeper_skips_at_max,
+    "seed_skip":        scenario_seed_skips_at_max,
 }
 
 if __name__ == "__main__":
@@ -545,12 +671,12 @@ if __name__ == "__main__":
         print(f"Available: {list(SCENARIOS.keys())}")
         sys.exit(1)
 
-    print(f"\n{CYN}{'═'*60}")
+    print(f"\n{CYN}{'='*60}")
     print(f"  SOZU Rotation Automation — Test Harness")
     print(f"  Running {len(requested)} scenario(s)")
-    print(f"{'═'*60}{RST}")
+    print(f"{'='*60}{RST}")
 
     for name in requested:
         SCENARIOS[name]()
 
-    print(f"\n{CYN}{'═'*60}{RST}\n")
+    print(f"\n{CYN}{'='*60}{RST}\n")

@@ -399,8 +399,18 @@ def _fetch_capacity(pw: str) -> dict:
 
 
 def _max_topup_active(cap: dict) -> float:
-    headroom = max(0.0, cap.get("locked_maximum", 0.0) - cap.get("locked_current", 0.0))
-    return round(headroom / TOPUP_SLASH_RATE, 4) if TOPUP_SLASH_RATE > 0 else 0.0
+    # All math in integer LUX (1 DUSK = exactly 1_000_000_000 LUX).
+    # Contract computes locked_added = topup_lux // 10 (integer floor).
+    # Largest topup where locked_added == headroom exactly:
+    #   topup_lux = headroom_lux * 10 + 9
+    # because floor((headroom*10+9) / 10) == headroom
+    locked_max_lux = int(round(cap.get("locked_maximum", 0.0) * 1e9))
+    locked_cur_lux = int(round(cap.get("locked_current", 0.0) * 1e9))
+    headroom_lux   = max(0, locked_max_lux - locked_cur_lux)
+    if headroom_lux <= 0 or TOPUP_SLASH_RATE <= 0:
+        return 0.0
+    max_topup_lux = headroom_lux * 10 + 9
+    return max_topup_lux / 1e9
 
 
 def _stake_headroom(cap: dict) -> float:

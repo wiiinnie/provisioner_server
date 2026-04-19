@@ -49,20 +49,8 @@ _pending_lock               = threading.Lock()
 
 # tx/included fast-path: fire stake_activate on tx/included instead of waiting
 # for the deposit contract event. Toggleable via dashboard checkbox.
-_tx_included_fastpath: bool = False
-_tx_included_fastpath_lock  = threading.Lock()
 
 
-def set_tx_included_fastpath(enabled: bool) -> None:
-    global _tx_included_fastpath
-    with _tx_included_fastpath_lock:
-        _tx_included_fastpath = enabled
-    _log(f"[events] tx/included fast-path {'enabled' if enabled else 'disabled'}")
-
-
-def get_tx_included_fastpath() -> bool:
-    with _tx_included_fastpath_lock:
-        return _tx_included_fastpath
 
 # Sweeper-owned activations — these come from rotation.py, not deposit race.
 # When an activate event arrives for one of these addresses, we skip deposit log.
@@ -127,16 +115,15 @@ def on_event(topic: str, decoded: dict, block_height: int | None = None) -> None
             _handle_deposit(decoded, block_height, label="deposit")
         elif topic == "reward":
             _handle_reward(decoded, block_height)
-        elif topic == "activate":
-            # Invalidate assess + capacity caches — stake state just changed
+        elif topic in ("activate", "liquidate", "deactivate", "unstake"):
+            # Invalidate assess + capacity caches — stake state just changed on-chain
             try:
                 from .assess import _invalidate_all_caches
                 _invalidate_all_caches()
             except Exception:
                 pass
-            _handle_activate(decoded, block_height)
-        elif topic == "tx/included" and get_tx_included_fastpath():
-            _handle_tx_included_fastpath(decoded, block_height)
+            if topic == "activate":
+                _handle_activate(decoded, block_height)
         elif topic == "tx/executed":
             _handle_tx_executed(decoded, block_height)
     except Exception as e:
@@ -213,41 +200,50 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
 
     _master    = cfg("master_idx")
     master_idx = int(_master) if _master is not None else -1
-    target_idx, target_addr = _pick_target(master_idx)
+    target_idx, target_addr = _pick_target(master_idx, window)
 
     if target_idx is None:
         _dlog({"type":"deposit_error","step":1,
-               "msg":f"no eligible provisioner for {label} — all active or master-only",
+               "msg":f"{label} {amount_dusk:,.4f} DUSK ({window}) → no eligible target (need ta=0, or ta=1 in rot/snatch window) — stake stays in pool",
                "amount":amount_dusk,"window":window,"ok":False})
         return
 
-    # Step 1
+    # Generate group_key here so step 1 log and all _do_allocate log entries share the same group
+    import time as _t
+    _gk = f"{round(amount_lux/1e9,4)}|{round(_t.time())}"
+    try:
+        from .assess import _assess_state_cached
+        _nodes_ta = (_assess_state_cached(0, "").get("by_idx", {})
+                     .get(target_idx, {}).get("ta"))
+    except Exception:
+        _nodes_ta = "?"
     _dlog({
         "type":      "deposit_received",
         "step":      1,
-        "msg":       f"{label} {amount_dusk:,.4f} DUSK ({window}) → activating prov[{target_idx}]…",
+        "msg":       f"{label} {amount_dusk:,.4f} DUSK ({window}) → targeting prov[{target_idx}] (ta={_nodes_ta})…",
         "amount":    amount_dusk,
         "window":    window,
         "depositor": depositor,
         "block":     block_height,
         "prov_idx":  target_idx,
         "prov_addr": target_addr,
+        "group_key": _gk,
         "ok":        True,
     })
 
     threading.Thread(
         target=_do_allocate,
-        args=(target_idx, target_addr, amount_dusk, block_height),
+        args=(target_idx, target_addr, amount_lux, block_height, _gk),
         daemon=True,
     ).start()
 
 
-def _pick_target(master_idx: int) -> tuple:
+def _pick_target(master_idx: int, window: str = "regular") -> tuple:
     """
     Target for deposit race allocation:
-      Priority 1: rot_active (ta=0, non-master) with slash headroom available
-      Priority 2: rot_slave (maturing ta=1, non-master) — no slash penalty
-      Priority 3: any inactive/seeded non-master
+      Priority 1: rot_active (ta=0, non-master) — immediate effect, capacity+slash checked
+      Priority 2: rot_slave (ta=1, non-master)  — active next epoch, no slash penalty
+      No target   → log and leave in pool (ta=2/inactive have no near-term effect)
 
     Uses cached assess + capacity — no wallet subprocess on hot path.
     """
@@ -277,7 +273,7 @@ def _pick_target(master_idx: int) -> tuple:
                         _dlog({
                             "type": "deposit_skipped",
                             "step": 0,
-                            "msg":  f"rot_active prov[{idx}] slash headroom exhausted — skipping",
+                            "msg":  f"rot_active prov[{idx}] slash headroom exhausted — stake stays in pool",
                             "ok":   False,
                         })
                         return None, None
@@ -287,38 +283,63 @@ def _pick_target(master_idx: int) -> tuple:
                 except Exception as e:
                     _log(f"[events] capacity check error: {e}")
 
-        # Priority 2: maturing ta=1 (rot_slave)
-        for idx in NODE_INDICES:
-            if idx == master_idx:
-                continue
-            node = nodes.get(idx, {})
-            if node.get("status") in ("maturing", "seeded") and node.get("ta") == 1:
-                addr = node.get("staking_address") or cfg(f"prov_{idx}_address") or ""
-                if addr:
-                    return idx, addr
+        # Priority 2: maturing ta=1 (rot_slave) — only in rotation/snatch window
+        # In regular window ta=1 is skipped: stake would sit idle for up to 6h
+        # and a competitor may have a better active target.
+        if window in ("rotation", "snatch"):
+            for idx in NODE_INDICES:
+                if idx == master_idx:
+                    continue
+                node = nodes.get(idx, {})
+                if node.get("status") in ("maturing", "seeded") and node.get("ta") == 1:
+                    addr = node.get("staking_address") or cfg(f"prov_{idx}_address") or ""
+                    if addr:
+                        return idx, addr
 
-        # Priority 3: any inactive/seeded non-master
-        for idx in NODE_INDICES:
-            if idx == master_idx:
-                continue
-            if nodes.get(idx, {}).get("status") in ("inactive", "seeded", "maturing"):
-                addr = nodes.get(idx, {}).get("staking_address") or cfg(f"prov_{idx}_address") or ""
-                if addr:
-                    return idx, addr
+        # Priority 3 intentionally removed — ta=2/inactive nodes are not valid deposit
+        # race targets. Stake on these nodes has no immediate effect. Leave in pool;
+        # sweeper or next rotation will handle it.
 
     except Exception as e:
         _log(f"[events] _pick_target error: {e}")
     return None, None
 
 
-def _do_allocate(idx: int, addr: str, amount_dusk: float, deposit_block: int | None) -> None:
-    """Fire stake-activate. Step 2 result comes from tx/executed event."""
+def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None, group_key: str = "") -> None:
+    """Fire stake-activate. Amount in LUX (integer, 9 decimal places). Step 2 result from tx/executed."""
     from .wallet import operator_cmd, get_password, WALLET_PATH
     from .config import _NET
 
-    pw         = get_password() or ""
-    amount_lux = int(amount_dusk * 1_000_000_000)
-    t_start    = time.time()
+    pw = get_password() or ""
+
+    # Cap to available global capacity — all in integer LUX, no float rounding
+    try:
+        from .assess import _fetch_capacity_cached, _invalidate_capacity_cache
+        cap             = _fetch_capacity_cached(pw)
+        available_dusk  = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
+        available_lux   = int(round(available_dusk * 1e9))
+        min_dep_lux     = round(float(cfg("min_deposit_dusk") or 100.0) * 1e9)
+        if available_lux < min_dep_lux:
+            _dlog({"type": "deposit_skipped", "step": 1,
+                   "msg": f"capacity full — available={available_lux/1e9:.4f} DUSK < {min_dep_lux/1e9:.0f} DUSK min — stake stays in pool",
+                   "amount": amount_lux / 1e9, "group_key": group_key, "ok": False})
+            with _pending_lock:
+                _pending_activations.pop(addr, None)
+            return
+        if amount_lux > available_lux:
+            _log(f"[events] capping deposit {amount_lux/1e9:.4f} → {available_lux/1e9:.4f} DUSK (max capacity), remainder stays in pool")
+            amount_lux = available_lux
+        # Invalidate cache NOW before firing so concurrent threads re-fetch fresh capacity
+        _invalidate_capacity_cache()
+    except Exception as _cap_err:
+        _log(f"[events] capacity cap error: {_cap_err}")
+
+    amount_dusk = amount_lux / 1e9
+    t_start     = time.time()
+
+    amount_key = round(amount_dusk, 4)
+    # Prefer group_key passed from _handle_deposit (matches step 1 log); fall back to local
+    group_key  = group_key or f"{amount_key}|{round(t_start)}"
 
     with _pending_lock:
         _pending_activations[addr] = {
@@ -326,13 +347,11 @@ def _do_allocate(idx: int, addr: str, amount_dusk: float, deposit_block: int | N
             "amount_dusk":   amount_dusk,
             "deposit_block": deposit_block,
             "prov_idx":      idx,
-            "included_ts":   None,   # set when tx/included arrives
+            "included_ts":   None,
+            "group_key":     group_key,
         }
 
-    # Register race candidate immediately so competitor tx/included can be matched
-    # (competitor's tx/included arrives ~20s before we know we lost via tx/executed)
-    amount_key = round(amount_dusk, 4)
-    group_key  = f"{amount_key}|{round(t_start)}"
+    # Register race candidate so competitor tx/included can be matched
     with _race_lost_lock:
         _race_lost_amounts[amount_key] = {
             "ts":                 t_start,
@@ -369,24 +388,8 @@ def _warm_caches() -> None:
         _log(f"[events] cache warm error: {e}")
 
 
-def _on_tx_included_own(prov_addr: str) -> None:
-    """Called when tx/included arrives for our own stake_activate tx."""
-    with _pending_lock:
-        p = _pending_activations.get(prov_addr)
-        if p and p.get("included_ts") is None:
-            p["included_ts"] = time.time()
 
 
-def _on_tx_included_competitor(prov_addr: str, amount_dusk: float) -> None:
-    """Called when tx/included arrives for any stake_activate — record if it matches a pending loss."""
-    own = _own_addresses()
-    if own and prov_addr in own:
-        return  # that's ours, handled by _on_tx_included_own
-    amount_key = round(amount_dusk, 4)
-    with _race_lost_lock:
-        entry = _race_lost_amounts.get(amount_key)
-        if entry and entry.get("winner_included_ts") is None:
-            entry["winner_included_ts"] = time.time()
 
 
 def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
@@ -416,6 +419,7 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
     exec_elapsed     = round(now - pending["wall_ts"], 1)      if pending else None
     included_elapsed = round(pending["included_ts"] - pending["wall_ts"], 1) \
                        if pending and pending.get("included_ts") else None
+    pending_group_key = (pending or {}).get("group_key")
 
     def _timing_str() -> str:
         parts = []
@@ -449,10 +453,10 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
         with _race_lock:
             _race_losses += 1
         wins, losses = _race_wins, _race_losses
-        # Retrieve the group_key registered at step 1
-        amount_key = round(amount_dusk, 4)
+        _amt_key = round(amount_dusk, 4)
         with _race_lost_lock:
-            group_key = (_race_lost_amounts.get(amount_key) or {}).get("group_key", f"{amount_key}|loss")
+            _fb_key = (_race_lost_amounts.get(_amt_key) or {}).get("group_key")
+        group_key = pending_group_key or _fb_key or f"{_amt_key}|loss"
         _dlog({
             "type":             "tx_failed",
             "step":             2,
@@ -472,80 +476,8 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
         })
 
 
-def _handle_tx_included_fastpath(decoded: dict, block_height: int | None) -> None:
-    """
-    Fast-path: fire deposit race on tx/included, gaining ~1 block (~10s) over
-    waiting for the contract event.
-
-    deposit  — amount available in payload → fire immediately
-    recycle  — amount not in payload → use pool cache as estimate
-    terminate — amount not in payload → use pool cache as estimate
-
-    Cache warming always runs regardless, so contract-event path is also faster.
-    """
-    try:
-        contract = cfg("contract_id") or ""
-        inner    = decoded.get("inner") or decoded
-        call     = inner.get("call") or {}
-        if call.get("contract") != contract:
-            return
-        fn_name = call.get("fn_name", "")
-
-        # Always warm caches on any relevant tx/included — benefits both fast-path
-        # and contract-event path if toggle is off
-        if fn_name in ("deposit", "stake", "recycle", "terminate"):
-            threading.Thread(target=_warm_caches, daemon=True).start()
-
-        # Race firing only when toggle is enabled
-        if not get_tx_included_fastpath():
-            return
-
-        if fn_name in ("deposit", "stake"):
-            # Amount is in the payload
-            fn_decoded = call.get("_fn_args_decoded") or {}
-            amount_lux = int(str(fn_decoded.get("amount") or 0))
-            if not amount_lux:
-                return
-            _handle_deposit(
-                {"amount": amount_lux, "hash": decoded.get("hash", ""), "account": "tx/included"},
-                block_height, label="deposit/tx_included",
-            )
-
-        elif fn_name in ("recycle", "terminate"):
-            # fn_args is empty — amount not in tx/included payload.
-            # Use pool cache as estimate; exact amount arrives via reward contract event.
-            label = f"reward/{fn_name}/tx_included"
-            threading.Thread(
-                target=_fastpath_pool_estimate,
-                args=(label, block_height),
-                daemon=True,
-            ).start()
-
-    except Exception as e:
-        _log(f"[events] tx/included fast-path error: {e}")
 
 
-def _fastpath_pool_estimate(fn_name: str, block_height: int | None) -> None:
-    """Fire deposit race using pool cache for recycle/terminate fast-path."""
-    try:
-        from .pool import _fast_alloc_pool
-        pool_dusk = _fast_alloc_pool()
-        min_dep   = float(cfg("min_deposit_dusk") or 100.0)
-        if pool_dusk < min_dep:
-            return
-        amount_lux = int(pool_dusk * 1e9)
-        _handle_deposit(
-            {"amount": amount_lux, "hash": "", "account": "tx/included"},
-            block_height, label=f"{fn_name}/tx_included",
-        )
-    except Exception as e:
-        _log(f"[events] fastpath pool estimate error: {e}")
-
-
-# ── Lost-to tracking ──────────────────────────────────────────────────────────
-# When we lose a race, store the amount so we can match the winning activate event.
-_race_lost_amounts: dict = {}   # amount_dusk (rounded) → {"ts": float, "group_key": str}
-_race_lost_lock          = threading.Lock()
 
 
 def _handle_activate(decoded: dict, block_height: int | None) -> None:

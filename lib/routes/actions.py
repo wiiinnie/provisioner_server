@@ -67,32 +67,57 @@ def provisioner_list():
 @bp.route("/api/provisioner/addresses", methods=["GET", "POST"])
 def provisioner_addresses():
     pw = (request.get_json(silent=True) or {}).get("password", get_password())
-    profiles_addrs = {}
+
+    # Single stake-info call returns provisioners in index order (0, 1, 2)
+    # Try assess cache first; fall back to direct stake-info parse by position
+    addrs = {}
     try:
-        r_prof = wallet_cmd("profiles", timeout=15, password=pw)
-        profiles_addrs = _parse_profiles_addresses(r_prof.get("stdout", "") + r_prof.get("stderr", ""))
+        from .assess import _assess_state_cached
+        st    = _assess_state_cached(0, pw)
+        nodes = st.get("by_idx", {})
+        for idx in NODE_INDICES:
+            node = nodes.get(idx) or {}
+            addrs[str(idx)] = node.get("staking_address", "") or cfg(f"prov_{idx}_address") or ""
     except Exception:
         pass
 
-    addrs = {}
+    # If any address missing, parse stake-info output directly by position
+    if not all(addrs.get(str(i)) for i in NODE_INDICES):
+        try:
+            import json as _json
+            from .wallet import operator_cmd as _op, get_password as _gpw
+            from .config import _NET
+            r = _op(f"{_NET} stake-info --format json", timeout=30, password=pw or _gpw() or "")
+            raw = (r.get("stdout") or r.get("stderr") or "").strip()
+            if raw.startswith("{"):
+                data  = _json.loads(raw)
+                provs = data.get("provisioners") or []
+                for i, p in enumerate(provs):
+                    if i in NODE_INDICES:
+                        acct = p.get("account", "")
+                        if acct and not addrs.get(str(i)):
+                            addrs[str(i)] = acct
+        except Exception:
+            pass
+
+    # Fill any still-missing from config
     for idx in NODE_INDICES:
-        cfg_addr, live_addr = cfg(f"prov_{idx}_address") or "", ""
-        with _stake_cache_lock:
-            live_addr = (_stake_cache.get(idx) or {}).get("staking_address", "")
-        if not live_addr and pw:
-            r    = wallet_cmd(f"--profile-idx {idx} stake-info", timeout=20, password=pw)
-            info = parse_stake_info(r.get("stdout", "") + r.get("stderr", ""))
-            live_addr = info.get("staking_address", "")
-        if not live_addr:
-            live_addr = profiles_addrs.get(idx, "")
-        addrs[str(idx)] = live_addr or cfg_addr
-        if live_addr and live_addr != cfg_addr:
-            try:
-                current = _load_config()
-                current[f"prov_{idx}_address"] = live_addr
-                _save_config(current)
-            except Exception:
-                pass
+        if not addrs.get(str(idx)):
+            addrs[str(idx)] = cfg(f"prov_{idx}_address") or ""
+
+    # Persist any newly detected addresses back to config
+    try:
+        changed = False
+        current = _load_config()
+        for idx in NODE_INDICES:
+            live = addrs.get(str(idx), "")
+            if live and live != current.get(f"prov_{idx}_address", ""):
+                current[f"prov_{idx}_address"] = live
+                changed = True
+        if changed:
+            _save_config(current)
+    except Exception:
+        pass
 
     return jsonify({"ok": True, "addresses": addrs, "operator": OPERATOR_ADDRESS()})
 

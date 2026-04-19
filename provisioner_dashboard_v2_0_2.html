@@ -470,7 +470,7 @@
 </div>
 
 <nav>
-  <div class="nav-brand">prov<span>manager</span><span style="font-size:8px;font-weight:300;color:var(--dim);letter-spacing:.04em;margin-left:6px;align-self:flex-end;padding-bottom:1px;">ui&nbsp;v2.0.1&nbsp;·&nbsp;srv&nbsp;<span id="srv-version">…</span></span></div>
+  <div class="nav-brand">prov<span>manager</span><span style="font-size:8px;font-weight:300;color:var(--dim);letter-spacing:.04em;margin-left:6px;align-self:flex-end;padding-bottom:1px;">ui&nbsp;v2.0.2&nbsp;·&nbsp;srv&nbsp;<span id="srv-version">…</span></span></div>
   <div class="nav-sep"></div>
   <div class="nav-rows">
     <div class="nav-row">
@@ -554,12 +554,6 @@
         <span id="race-wins"   style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--green);">W0</span>
         <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--border);">/</span>
         <span id="race-losses" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);">L0</span>
-        <label title="Fire on tx/included instead of deposit event (~1 block faster, experimental)"
-               style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:auto;">
-          <input type="checkbox" id="fastpath-toggle" onchange="_setFastpath(this.checked)"
-                 style="accent-color:var(--teal);cursor:pointer;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--dim);">tx/included</span>
-        </label>
         <button onclick="_clearDepositLog()"
           style="background:none;border:none;color:var(--dim);font-size:9px;cursor:pointer;font-family:'IBM Plex Mono',monospace;">clear</button>
       </div>
@@ -804,7 +798,7 @@
     </div>
 
     <!-- HISTORY tab content: stake chart + events -->
-    <div id="prov-content-history" style="display:none;flex:1;min-height:0;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;">
+    <div id="prov-content-history" style="display:none;flex:1;min-height:0;overflow-y:auto;padding:10px 12px;flex-direction:column;gap:8px;">
 
       <!-- Chart controls -->
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
@@ -822,6 +816,10 @@
             style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
                    border:1px solid #BA7517;border-radius:3px;background:transparent;
                    color:#BA7517;cursor:pointer;">p2</button>
+          <button id="hist-tog-pool" onclick="_histTogglePool()"
+            style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+                   border:1px solid var(--border);border-radius:3px;background:transparent;
+                   color:var(--dim);cursor:pointer;opacity:0.35;">pool</button>
         </div>
         <div style="display:flex;gap:3px;margin-left:auto;">
           <button onclick="_histRange(360)" id="hist-r-6h"
@@ -1755,9 +1753,6 @@ async function loadConfig() {
     document.getElementById('cfg-network-id').value   = _cfg.network_id ?? 2
     document.getElementById('cfg-contract').value     = _cfg.contract_address ?? ''
     document.getElementById('cfg-operator').value     = _cfg.operator_address ?? ''
-    document.getElementById('cfg-prov0-addr').value  = _cfg.prov_0_address || ''
-    document.getElementById('cfg-prov1-addr').value  = _cfg.prov_1_address || ''
-    document.getElementById('cfg-prov2-addr').value  = _cfg.prov_2_address || ''
     // Node log paths
     if (document.getElementById('cfg-node0-log')) {
       document.getElementById('cfg-node0-log').value = _cfg.node_0_log || '/var/log/rusk-1.log'
@@ -1770,45 +1765,38 @@ async function loadConfig() {
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11
     document.getElementById('cfg-backfill').value       = _cfg.backfill_blocks ?? 200
-    document.getElementById('cfg-master-stake-pct').value = _cfg.master_stake_pct != null ? (_cfg.master_stake_pct * 100).toFixed(0) : '75'
+    document.getElementById('cfg-master-threshold-pct').value = _cfg.master_threshold_pct ?? 15
+    document.getElementById('cfg-telegram-token').value  = _cfg.telegram_bot_token || ''
+    document.getElementById('cfg-telegram-chatid').value = _cfg.telegram_chat_id || ''
     document.getElementById('cfg-min-deposit').value   = _cfg.min_deposit_dusk ?? 100
     const snatchMinEl = document.getElementById('cfg-snatch-min-deposit')
     if (snatchMinEl) snatchMinEl.value = _cfg.snatch_min_deposit_dusk ?? 100
     document.getElementById('cfg-gas-limit').value     = _cfg.gas_limit ?? 2000000
     document.getElementById('cfg-gas-price').value     = _cfg.gas_price ?? 1
+    const swEl = document.getElementById('cfg-sweeper-enabled')
+    if (swEl) swEl.checked = !!_cfg.sweeper_enabled
     // Rotation config fields
-    if (document.getElementById('cfg-prov0-sk')) {
-      document.getElementById('cfg-prov0-sk').value    = ''  // never pre-fill SK
-      document.getElementById('cfg-prov1-sk').value    = ''
-      if (document.getElementById('cfg-prov2-sk')) document.getElementById('cfg-prov2-sk').value = ''
-      document.getElementById('cfg-master-idx').value = _cfg.master_idx ?? -1
-      // SK set indicators
-      const sk0status = document.getElementById('cfg-prov0-sk-status')
-      const sk1status = document.getElementById('cfg-prov1-sk-status')
-      const sk2status = document.getElementById('cfg-prov2-sk-status')
-      if (sk0status) sk0status.textContent = _cfg.prov_0_sk_set ? '✓ set' : 'not set'
-      if (sk0status) sk0status.style.color = _cfg.prov_0_sk_set ? 'var(--green)' : 'var(--dim)'
-      if (sk1status) sk1status.textContent = _cfg.prov_1_sk_set ? '✓ set' : 'not set'
-      if (sk1status) sk1status.style.color = _cfg.prov_1_sk_set ? 'var(--green)' : 'var(--dim)'
-      if (sk2status) sk2status.textContent = _cfg.prov_2_sk_set ? '✓ set' : 'not set'
-      if (sk2status) sk2status.style.color = _cfg.prov_2_sk_set ? 'var(--green)' : 'var(--dim)'
-      // Auto-detect provisioner addresses from wallet
-      fetch(`${API}/api/provisioner/addresses`, {method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({password: getPassword()})
-      }).then(r=>r.json()).then(d=>{
-        const a0 = d.addresses?.['0'] || ''
-        const a1 = d.addresses?.['1'] || ''
-        const a2 = d.addresses?.['2'] || ''
-        const d0 = document.getElementById('cfg-prov0-addr-display')
-        const d1 = document.getElementById('cfg-prov1-addr-display')
-        const d2 = document.getElementById('cfg-prov2-addr-display')
-        if (d0) d0.textContent = a0 ? a0.slice(0,12)+'…'+a0.slice(-6) : '—'
-        if (d1) d1.textContent = a1 ? a1.slice(0,12)+'…'+a1.slice(-6) : '—'
-        if (d2) d2.textContent = a2 ? a2.slice(0,12)+'…'+a2.slice(-6) : '—'
-
-      }).catch(()=>{})
-    }
+    document.getElementById('cfg-master-idx').value = _cfg.master_idx ?? -1
+    // Show addresses from config immediately as fallback, then try auto-detect from wallet
+    const _fmt = a => a ? a.slice(0,12)+'…'+a.slice(-6) : '—'
+    const d0 = document.getElementById('cfg-prov0-addr-display')
+    const d1 = document.getElementById('cfg-prov1-addr-display')
+    const d2 = document.getElementById('cfg-prov2-addr-display')
+    if (d0) d0.textContent = _fmt(_cfg.prov_0_address || '')
+    if (d1) d1.textContent = _fmt(_cfg.prov_1_address || '')
+    if (d2) d2.textContent = _fmt(_cfg.prov_2_address || '')
+    // Auto-detect from wallet — updates display if wallet returns addresses
+    fetch(`${API}/api/provisioner/addresses`, {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({password: getPassword()})
+    }).then(r=>r.json()).then(d=>{
+      const a0 = d.addresses?.['0'] || ''
+      const a1 = d.addresses?.['1'] || ''
+      const a2 = d.addresses?.['2'] || ''
+      if (d0 && a0) d0.textContent = _fmt(a0)
+      if (d1 && a1) d1.textContent = _fmt(a1)
+      if (d2 && a2) d2.textContent = _fmt(a2)
+    }).catch(()=>{})
 
     // Show/hide warning banner
   } catch(e) {
@@ -1821,9 +1809,6 @@ async function saveConfig() {
     network_id:           parseInt(document.getElementById('cfg-network-id').value),
     contract_address:     document.getElementById('cfg-contract').value.trim(),
     operator_address:     document.getElementById('cfg-operator').value.trim(),
-    prov_0_address:       document.getElementById('cfg-prov0-addr').value.trim(),
-    prov_1_address:       document.getElementById('cfg-prov1-addr').value.trim(),
-    prov_2_address:       document.getElementById('cfg-prov2-addr').value.trim(),
     node_0_log:           document.getElementById('cfg-node0-log')?.value.trim() || '/var/log/rusk-1.log',
     node_1_log:           document.getElementById('cfg-node1-log')?.value.trim() || '/var/log/rusk-2.log',
     node_2_log:           document.getElementById('cfg-node2-log')?.value.trim() || '/var/log/rusk-3.log',
@@ -1833,20 +1818,18 @@ async function saveConfig() {
     rotation_window:      parseInt(document.getElementById('cfg-rotation').value),
     snatch_window:        parseInt(document.getElementById('cfg-snatch').value),
     backfill_blocks:      parseInt(document.getElementById('cfg-backfill').value),
-    master_stake_pct:     parseFloat(document.getElementById('cfg-master-stake-pct').value || '75'),
+    master_threshold_pct: parseFloat(document.getElementById('cfg-master-threshold-pct').value || '15'),
+    telegram_chat_id:     document.getElementById('cfg-telegram-chatid').value.trim(),
     min_deposit_dusk:     parseFloat(document.getElementById('cfg-min-deposit').value || '100'),
     snatch_min_deposit_dusk: parseFloat(document.getElementById('cfg-snatch-min-deposit')?.value || '100'),
     gas_limit:            parseInt(document.getElementById('cfg-gas-limit').value || '2000000'),
     gas_price:            parseInt(document.getElementById('cfg-gas-price').value || '1'),
+    sweeper_enabled:      !!(document.getElementById('cfg-sweeper-enabled')?.checked),
+    telegram_bot_token:   document.getElementById('cfg-telegram-token').value.trim(),
     master_idx:           parseInt(document.getElementById('cfg-master-idx')?.value ?? '-1'),
   }
   try {
-    const sk0 = document.getElementById('cfg-prov0-sk')?.value.trim()
-    const sk1 = document.getElementById('cfg-prov1-sk')?.value.trim()
-    const sk2 = document.getElementById('cfg-prov2-sk')?.value.trim()
-    if (sk0) payload.prov_0_sk = sk0
-    if (sk1) payload.prov_1_sk = sk1
-    if (sk2) payload.prov_2_sk = sk2
+
     const r = await fetch(`${API}/api/config`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -2258,6 +2241,7 @@ function _renderEpochMonitor(epoch, blkLeft, rotWin, snatchWin) {
 
 // ── RUES block_accepted → force fetchLivePanel ────────────────────────────────
 let _lastBlockForRefresh = 0
+let _lastStakeEventTs    = ""  // track last stake-change event timestamp for instant card refresh
 // ── Blk counter driven by exact local node heights ────────────────────────────
 // Node cards already update every 1s via _pollNodeHeights → /api/nodes/heights
 // Piggyback on that to keep the epoch countdown exact.
@@ -2266,6 +2250,8 @@ let _blkAtLastUpdate = 0  // kept for _onRuesBlock compat
 function _onRuesBlock(height) {
   if (!height) return
   _blkAtLastUpdate = height
+  // Update block counter immediately on every block_accepted event — exact, no polling lag
+  _updateBlkCounter(height)
   if (height !== _lastBlockForRefresh) {
     _lastBlockForRefresh = height
     fetchLivePanel()
@@ -2312,23 +2298,7 @@ function _updateBlkCounter(height) {
 
 let _lastDepLogLen = 0
 
-async function _loadFastpathState() {
-  try {
-    const d = await fetch(`${API}/api/events/fastpath`).then(r => r.json())
-    const cb = document.getElementById('fastpath-toggle')
-    if (cb) cb.checked = d.tx_included_fastpath || false
-  } catch(e) {}
-}
 
-async function _setFastpath(enabled) {
-  try {
-    await fetch(`${API}/api/events/fastpath`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({enabled})
-    })
-  } catch(e) {}
-}
 
 async function _clearDepositLog() {
   try {
@@ -2380,11 +2350,15 @@ async function _pollDepositLog() {
 
     body.innerHTML = visible.map(g => {
       const won     = g.some(e => e.type === 'tx_confirmed')
-      const lost    = g.some(e => e.type === 'tx_failed')
+      const failed  = g.some(e => e.type === 'tx_failed')
+      const skipped = !won && !failed && g.some(e =>
+        e.type === 'deposit_skipped' || e.type === 'deposit_error')
       const groupBg = won
         ? 'background:rgba(45,212,184,.05);border:1px solid rgba(45,212,184,.2);'
-        : lost
+        : failed
         ? 'background:rgba(255,80,80,.05);border:1px solid rgba(255,80,80,.2);'
+        : skipped
+        ? 'background:rgba(186,117,23,.05);border:1px solid rgba(186,117,23,.25);'
         : 'background:var(--bg2);border:1px solid var(--border);'
 
       const rows = g.map(e => {
@@ -2395,10 +2369,12 @@ async function _pollDepositLog() {
                         : step===3   ? '<span style="color:var(--dim);font-size:7.5px;">③ </span>'
                         : ''
         const col = e.type==='tx_confirmed' || e.type==='activate_confirmed' ? 'var(--green)'
-                  : e.type==='deposit_received' ? 'var(--teal)'
-                  : e.type==='deposit_skipped'  ? 'var(--dim)'
-                  : e.type==='lost_to'          ? 'var(--yellow)'
-                  : e.ok===false ? 'var(--red)' : 'var(--cyan)'
+                  : e.type==='deposit_received'                               ? 'var(--teal)'
+                  : e.type==='deposit_skipped' || e.type==='deposit_error'   ? 'var(--amber)'
+                  : e.type==='lost_to'                                        ? 'var(--yellow)'
+                  : e.type==='tx_failed'                                      ? 'var(--red)'
+                  : e.ok===false                                              ? 'var(--red)'
+                  : 'var(--cyan)'
         const blkStr = e.block ? ` blk#${e.block.toLocaleString()}` : ''
         return `<div style="padding:1px 0;font-size:8.5px;">` +
           `<span style="color:var(--dim)">${e.ts||''}</span> ` +
@@ -2427,8 +2403,8 @@ let _ruesRawShowSet = null
 
 // Topic classification for two-row filter UI
 const _BLOCKS_TOPICS   = ['block_accepted']
-const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','liquidate','reward','unstake']
-const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','liquidate','reward/recycle','reward/terminate','unstake']
+const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','liquidate','reward','unstake','capacity_update']
+const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
 const _TX_TOPICS       = ['tx/included','tx/executed']
 const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._TX_TOPICS]
 // Display labels
@@ -2445,6 +2421,7 @@ const _SEG_TO_KEY = {
   'reward/recycle':   'reward/recycle',
   'reward/terminate': 'reward/terminate',
   'unstake':    'unstake',
+  'update_operator_max_capacity': 'capacity_update',
   'included':   'tx/included',
   'executed':   'tx/executed',
 }
@@ -2529,6 +2506,17 @@ async function _pollRues() {
     // Drive epoch monitor: find most recent block_accepted with a height
     const latestBlock = (d.log || []).find(e => e.topic === 'block_accepted' && e.height)
     if (latestBlock) _onRuesBlock(latestBlock.height)
+
+    // Refresh provisioner cards immediately when a stake-changing event is detected
+    const _STAKE_CHANGE_TOPICS = new Set(['activate','liquidate','deactivate','unstake'])
+    const _newTs = (d.log || [])
+      .filter(e => _STAKE_CHANGE_TOPICS.has(e.topic))
+      .map(e => e.ts)
+      .find(ts => ts && ts > (_lastStakeEventTs || ''))
+    if (_newTs) {
+      _lastStakeEventTs = _newTs
+      fetchLivePanel()
+    }
 
     // ── Raw tab hide-filter chips ─────────────────────────────────────────────
     // Raw tab filter chips — 3 rows
@@ -2980,7 +2968,6 @@ async function _pollRotation() {
 }
 
 setInterval(_pollRotation, 5000)
-_loadFastpathState()
 _pollRotation()
 
 
@@ -2988,6 +2975,7 @@ _pollRotation()
 
 let _histChart       = null
 let _histVisible     = [true, true, true]
+let _histPoolVisible = false   // pool events hidden by default
 let _histRangeBlocks = 2160   // default 24h (~2160 blocks)
 const _histColors    = ['#378ADD', '#1D9E75', '#BA7517']
 const _histProvNames = ['prov 0', 'prov 1', 'prov 2']
@@ -3013,6 +3001,24 @@ function _histToggle(idx) {
     _histChart.data.datasets[idx].hidden = !_histVisible[idx]
     _histChart.update('none')
   }
+  _histRenderEvents()
+}
+
+async function _testTelegram() {
+  try {
+    const r = await fetch(`${API}/api/telegram/test`, {method:'POST'}).then(r=>r.json())
+    alert(r.ok ? '✅ Telegram test message sent!' : `❌ Failed: ${r.error}`)
+  } catch(e) {
+    alert(`❌ Error: ${e}`)
+  }
+}
+
+function _histTogglePool() {
+  _histPoolVisible = !_histPoolVisible
+  const btn = document.getElementById('hist-tog-pool')
+  btn.style.opacity = _histPoolVisible ? '1' : '0.35'
+  btn.style.color   = _histPoolVisible ? 'var(--teal)' : 'var(--dim)'
+  btn.style.borderColor = _histPoolVisible ? 'var(--teal)' : 'var(--border)'
   _histRenderEvents()
 }
 
@@ -3174,7 +3180,7 @@ function _histRenderEvents() {
   }[t] || t)
 
   const rows = events
-    .filter(e => e.idx === null ? Object.values(_histVisible).some(v=>v) : _histVisible[e.idx])
+    .filter(e => e.idx === null ? _histPoolVisible : _histVisible[e.idx])
     .slice(0, 50)
     .map(e => {
       const amt = e.amount_dusk != null
@@ -3187,7 +3193,7 @@ function _histRenderEvents() {
         <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;
                      background:${topicColor(e.topic)};display:inline-block;"></span>
         <span style="color:var(--dim);min-width:60px;">#${Number(e.block).toLocaleString()}</span>
-        <span style="color:${_histColors[e.idx]};min-width:20px;">p${e.idx}</span>
+        <span style="color:${e.idx !== null ? _histColors[e.idx] : 'var(--dim)'};min-width:36px;">${e.idx !== null ? 'p'+e.idx : 'pool'}</span>
         <span style="color:var(--dim);flex:1;">${topicLabel(e.topic)}</span>
         ${amt}
       </div>`
@@ -3221,14 +3227,7 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Operator Address</label>
       <input class="modal-input" id="cfg-operator" type="text" style="margin:0;" placeholder="BLS public key (base58)">
 
-      <label style="font-size:11px;color:var(--muted);">Provisioner 0 Address<br><span style="font-size:10px;color:var(--dim)">for event highlighting</span></label>
-      <input class="modal-input" id="cfg-prov0-addr" type="text" style="margin:0;" placeholder="Staking address (base58)">
 
-      <label style="font-size:11px;color:var(--muted);">Provisioner 1 Address<br><span style="font-size:10px;color:var(--dim)">for event highlighting</span></label>
-      <input class="modal-input" id="cfg-prov1-addr" type="text" style="margin:0;" placeholder="Staking address (base58)">
-
-      <label style="font-size:11px;color:var(--muted);">Provisioner 2 Address<br><span style="font-size:10px;color:var(--dim)">for event highlighting</span></label>
-      <input class="modal-input" id="cfg-prov2-addr" type="text" style="margin:0;" placeholder="Staking address (base58)">
 
       <label style="font-size:11px;color:var(--muted);">Rotation Window (blocks)<br><span style="font-size:10px;color:var(--dim)">blocks 2120–2149 (blk_left 12–41)</span></label>
       <input class="modal-input" id="cfg-rotation" type="number" style="margin:0;" placeholder="100">
@@ -3268,28 +3267,23 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Prov 2 Address<br><span style="font-size:10px;color:var(--dim)">auto-detected from wallet</span></label>
       <span id="cfg-prov2-addr-display" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);">—</span>
 
-      <label style="font-size:11px;color:var(--muted);">Prov 0 SK<br><span style="font-size:10px;color:var(--dim)">stored in ~/.sozu_keys (600)</span></label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input class="modal-input" id="cfg-prov0-sk" type="password" style="margin:0;flex:1;" placeholder="leave blank to keep existing">
-        <span id="cfg-prov0-sk-status" style="font-size:10px;color:var(--dim);white-space:nowrap;">not set</span>
-      </div>
 
-      <label style="font-size:11px;color:var(--muted);">Prov 1 SK<br><span style="font-size:10px;color:var(--dim)">stored in ~/.sozu_keys (600)</span></label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input class="modal-input" id="cfg-prov1-sk" type="password" style="margin:0;flex:1;" placeholder="leave blank to keep existing">
-        <span id="cfg-prov1-sk-status" style="font-size:10px;color:var(--dim);white-space:nowrap;">not set</span>
-      </div>
-
-      <label style="font-size:11px;color:var(--muted);">Prov 2 SK<br><span style="font-size:10px;color:var(--dim)">stored in ~/.sozu_keys (600)</span></label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input class="modal-input" id="cfg-prov2-sk" type="password" style="margin:0;flex:1;" placeholder="leave blank to keep existing">
-        <span id="cfg-prov2-sk-status" style="font-size:10px;color:var(--dim);white-space:nowrap;">not set</span>
-      </div>
 
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Master Node</label>
 
-      <label style="font-size:11px;color:var(--muted);">Master Stake (%)<br><span style="font-size:10px;color:var(--dim)">% of active_maximum to keep in master node (default 75)</span></label>
-      <input class="modal-input" id="cfg-master-stake-pct" type="number" step="1" min="10" max="95" style="margin:0;" placeholder="75">
+      <label style="font-size:11px;color:var(--muted);">Master Threshold (%)<br><span style="font-size:10px;color:var(--dim)">alert when master stake drops below X% of max capacity (default 15)</span></label>
+      <input class="modal-input" id="cfg-master-threshold-pct" type="number" step="1" min="1" max="95" style="margin:0;" placeholder="15">
+
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Telegram Alerts</label>
+
+      <label style="font-size:11px;color:var(--muted);">Bot Token<br><span style="font-size:10px;color:var(--dim)">from @BotFather — leave blank to disable</span></label>
+      <input class="modal-input" id="cfg-telegram-token" type="text" style="margin:0;" placeholder="123456:ABC-DEF…">
+
+      <label style="font-size:11px;color:var(--muted);">Chat ID<br><span style="font-size:10px;color:var(--dim)">your Telegram user or group chat ID</span></label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input class="modal-input" id="cfg-telegram-chatid" type="text" style="margin:0;flex:1;" placeholder="-1001234567890">
+        <button onclick="_testTelegram()" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
 
       <label style="font-size:11px;color:var(--muted);">Min Deposit (DUSK)<br><span style="font-size:10px;color:var(--dim)">minimum incoming deposit amount to trigger auto-allocation (regular &amp; rotation windows)</span></label>
       <input class="modal-input" id="cfg-min-deposit" type="number" step="10" min="0" style="margin:0;" placeholder="100">
@@ -3306,6 +3300,14 @@ setInterval(() => {
       <input class="modal-input" id="cfg-gas-limit" type="number" step="100000" min="100000" style="margin:0;" placeholder="2000000">
       <label style="font-size:11px;color:var(--muted);margin-top:8px;">Gas Price (LUX)<br><span style="font-size:10px;color:var(--dim)">first flag passed to every wallet command (default 1)</span></label>
       <input class="modal-input" id="cfg-gas-price" type="number" step="1" min="1" style="margin:0;" placeholder="1">
+
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Automation</label>
+
+      <label style="font-size:11px;color:var(--muted);">Sweeper<br><span style="font-size:10px;color:var(--dim)">allocate idle pool stake between state checks (default off)</span></label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;">
+        <input type="checkbox" id="cfg-sweeper-enabled" style="width:14px;height:14px;accent-color:var(--teal);">
+        <span style="font-size:11px;color:var(--dim);">enable sweeper</span>
+      </label>
     </div>
 
     <div id="cfg-status" style="font-size:11px;color:var(--green);min-height:18px;margin-top:10px;"></div>

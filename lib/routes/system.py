@@ -95,20 +95,21 @@ def set_config():
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port")
-    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk")
+    bool_keys  = ("sweeper_enabled",)
+    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct")
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address",
-                  "node_0_log","node_1_log","node_2_log")
+                  "node_0_log","node_1_log","node_2_log",
+                  "telegram_bot_token","telegram_chat_id")
     for k in int_keys:
         if k in data:
             current[k] = max(100000,int(data[k])) if k=="gas_limit" else int(data[k])
     for k in float_keys:
         if k in data: current[k] = float(data[k])
+    for k in bool_keys:
+        if k in data: current[k] = bool(data[k])
     for k in str_keys:
         if k in data: current[k] = str(data[k]).strip()
-    if "master_stake_pct" in data:
-        val = float(data["master_stake_pct"])
-        current["master_stake_pct"] = round(val/100 if val>1 else val, 6)
     _save_config(current)
     sks = _load_sks(); sk_updated = False
     for key in ("prov_0_sk","prov_1_sk","prov_2_sk"):
@@ -131,6 +132,16 @@ def reset_config():
 def nodes_heights():
     from ..nodes import get_heights
     return jsonify(get_heights())
+
+
+@bp.route("/api/telegram/test", methods=["POST"])
+def telegram_test():
+    try:
+        from ..telegram import send
+        ok = send("✅ SOZU Dashboard — Telegram test message", alert_key="")
+        return jsonify({"ok": ok, "error": None if ok else "send returned False"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 
 @bp.route("/api/nodes/sync", methods=["GET"])
@@ -263,13 +274,7 @@ def race_counters():
     return jsonify(get_race_counters())
 
 
-@bp.route("/api/events/fastpath", methods=["GET", "POST"])
-def events_fastpath():
-    from ..events import get_tx_included_fastpath, set_tx_included_fastpath
-    if request.method == "POST":
-        enabled = bool(request.json.get("enabled", False))
-        set_tx_included_fastpath(enabled)
-    return jsonify({"tx_included_fastpath": get_tx_included_fastpath()})
+
 
 
 # ── Rotation automation ───────────────────────────────────────────────────────

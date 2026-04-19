@@ -70,6 +70,7 @@ _rotation_state: dict = {
     "waiting_for_ta1_idx":    None,   # idx: waiting for this node to reach ta=1 before re-seeding
     # sweeper
     "sweeper_candidate_block":  -1,   # block when candidate was recorded
+    "snatch_done_epoch":         -1,
     "sweeper_candidate_dusk":  0.0,   # pool balance at candidate block
 }
 
@@ -392,9 +393,14 @@ def on_block(block_height: int) -> None:
         with _state_lock:
             cand_block = _rotation_state["sweeper_candidate_block"]
             cand_dusk  = _rotation_state["sweeper_candidate_dusk"]
-        if cand_block > 0 and block_height - cand_block >= STATE_CHECK_BLOCKS:
+        _sweeper_on = bool(cfg("sweeper_enabled"))
+        if _sweeper_on and cand_block > 0 and block_height - cand_block >= STATE_CHECK_BLOCKS:
             threading.Thread(target=_run_sweeper,
                              args=(cand_dusk, delta_snapshot, blk_left), daemon=True).start()
+            with _state_lock:
+                _rotation_state["sweeper_candidate_block"] = -1
+                _rotation_state["sweeper_candidate_dusk"]  = 0.0
+        elif not _sweeper_on:
             with _state_lock:
                 _rotation_state["sweeper_candidate_block"] = -1
                 _rotation_state["sweeper_candidate_dusk"]  = 0.0
@@ -407,6 +413,10 @@ def on_block(block_height: int) -> None:
     with _state_lock:
         precheck_ep = _rotation_state["precheck_done_epoch"]
     if blk_left == rot_win + 5 and cur_epoch != precheck_ep:
+        # Mark immediately before spawning thread — prevents duplicate fires
+        # from multiple rapid block_accepted events for the same block
+        with _state_lock:
+            _rotation_state["precheck_done_epoch"] = cur_epoch
         threading.Thread(target=_precheck_rotation,
                          args=(cur_epoch,), daemon=True).start()
         return
@@ -415,9 +425,86 @@ def on_block(block_height: int) -> None:
     with _state_lock:
         last_rot = _rotation_state["last_rotation_epoch"]
     if in_rot_win and cur_epoch != last_rot:
+        with _state_lock:
+            _rotation_state["last_rotation_epoch"] = cur_epoch
         _rlog_step(f"rotation window entered: blk_left={blk_left} epoch={cur_epoch}")
         threading.Thread(target=_run_rotation, args=(cur_epoch,), daemon=True).start()
 
+    # ── Snatch window: fire sweeper directly on first block ───────────────────
+    # No candidate wait — act immediately on whatever is in the pool right now.
+    if blk_left == snatch_win and bool(cfg("sweeper_enabled")):
+        with _state_lock:
+            snatch_done = _rotation_state.get("snatch_done_epoch", -1)
+        if cur_epoch != snatch_done:
+            with _state_lock:
+                _rotation_state["snatch_done_epoch"] = cur_epoch
+            threading.Thread(target=_run_snatch, args=(cur_epoch, blk_left), daemon=True).start()
+
+
+
+# ── Snatch window direct allocator ───────────────────────────────────────────
+
+def _run_snatch(cur_epoch: int, blk_left: int) -> None:
+    """
+    Fires on first block of snatch window. No candidate wait — act immediately.
+    Only targets ta=1 (rot_slave) — no slash, active next epoch.
+    """
+    try:
+        min_sweep = float(cfg("min_deposit_dusk") or 100.0)
+        pool      = _pool_dusk()
+        _rlog_info(f"snatch window: pool={pool:.4f} DUSK")
+        if pool < min_sweep:
+            _rlog_info(f"snatch window: pool {pool:.4f} < {min_sweep:.0f} DUSK — skipping")
+            return
+
+        st    = _assess()
+        nodes = st.get("by_idx", {})
+        rot   = _rot_indices()
+        master = _master_idx()
+
+        rot_slave_idx = next((i for i in rot
+                              if i != master
+                              and nodes.get(i,{}).get("status") in ("maturing","seeded")
+                              and nodes.get(i,{}).get("ta") == 1), None)
+        if rot_slave_idx is None:
+            _rlog_info("snatch window: no ta=1 target — skipping")
+            return
+
+        target_addr = _addr(rot_slave_idx, nodes)
+        if not target_addr:
+            _rlog_err(f"snatch window: no address for prov[{rot_slave_idx}]")
+            return
+
+        try:
+            from .assess import _fetch_capacity_cached, _invalidate_capacity_cache
+            cap       = _fetch_capacity_cached(_pw())
+            available = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
+            if available < min_sweep:
+                _rlog_warn(f"snatch window: capacity full — available={available:.2f} DUSK — skipping")
+                return
+            alloc_dusk = min(pool, available)
+            _invalidate_capacity_cache()
+        except Exception as _ce:
+            alloc_dusk = pool
+            _rlog_warn(f"snatch window: capacity check error: {_ce} — using pool balance")
+
+        from .wallet import WALLET_PATH
+        alloc_lux = round(alloc_dusk * 1e9)
+        _rlog_step(f"snatch window: {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1, no slash)")
+        r = _cmd(f"pool stake-activate --skip-confirmation "
+                 f"--amount {alloc_lux} --provisioner {target_addr} "
+                 f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
+        if r.get("ok"):
+            _rlog_ok(f"snatch window: allocated {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}]")
+            try:
+                from .events import mark_sweeper_activation
+                mark_sweeper_activation(target_addr)
+            except Exception:
+                pass
+        else:
+            _rlog_err(f"snatch window: allocation failed: {r.get('stderr','')[:100]}")
+    except Exception as e:
+        _rlog_err(f"snatch window error: {e}")
 
 # ── Periodic state check ──────────────────────────────────────────────────────
 
@@ -438,18 +525,55 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
         tas      = {i: nodes.get(i,{}).get("ta") for i in rot}
         _rlog_info(f"A:{len(active)} M:{len(maturing)} I:{len(inactive)} ta={tas}")
 
-        # ── Record sweeper candidate unconditionally before any early returns ──
-        # Must happen before state-branch returns so candidate is always set.
+        # ── Master threshold check ────────────────────────────────────────────
         try:
-            pool_now   = _pool_dusk()
-            min_sweep  = float(cfg("min_deposit_dusk") or 100.0)
-            if pool_now >= min_sweep:
-                with _state_lock:
-                    _rotation_state["sweeper_candidate_block"] = block_height
-                    _rotation_state["sweeper_candidate_dusk"]  = pool_now
-                _rlog_info(f"sweeper: {pool_now:.4f} DUSK in pool — checking again in {STATE_CHECK_BLOCKS} blocks")
-        except Exception:
-            pass
+            from .assess import _fetch_capacity_cached as _fcc
+            master_idx = _master_idx()
+            if master_idx >= 0:
+                threshold_pct = float(cfg("master_threshold_pct") or 15.0)
+                master_node   = nodes.get(master_idx, {})
+                master_stake  = master_node.get("stake_dusk", 0.0)
+                cap           = _fcc(_pw())
+                active_max    = cap.get("active_maximum", 0.0)
+                threshold_dusk = active_max * threshold_pct / 100.0
+                # Compare in LUX to avoid float issues
+                master_lux    = round(master_stake    * 1e9)
+                threshold_lux = round(threshold_dusk  * 1e9)
+                if master_lux < threshold_lux:
+                    _rlog_warn(f"master prov[{master_idx}] stake {master_stake:,.2f} DUSK "
+                               f"< threshold {threshold_dusk:,.2f} DUSK "
+                               f"({threshold_pct:.0f}% of {active_max:,.0f}) — sending alert")
+                    try:
+                        from .telegram import alert_master_below_threshold
+                        alert_master_below_threshold(
+                            master_idx, master_stake, threshold_dusk,
+                            threshold_pct, active_max)
+                    except Exception as _tg_err:
+                        _rlog_warn(f"telegram alert error: {_tg_err}")
+                else:
+                    # Condition resolved — reset cooldown so next crossing alerts again
+                    try:
+                        from .telegram import reset_alert
+                        reset_alert("master_below_threshold")
+                    except Exception:
+                        pass
+        except Exception as _thresh_err:
+            _rlog_warn(f"master threshold check error: {_thresh_err}")
+
+        # ── Record sweeper candidate (regular window only, sweeper enabled) ──
+        # During rotation window, the pool holds freed liquidation stake — don't touch it.
+        _rot_win = int(cfg("rotation_window") or 41)
+        if bool(cfg("sweeper_enabled")) and blk_left > _rot_win:
+            try:
+                pool_now   = _pool_dusk()
+                min_sweep  = float(cfg("min_deposit_dusk") or 100.0)
+                if pool_now >= min_sweep:
+                    with _state_lock:
+                        _rotation_state["sweeper_candidate_block"] = block_height
+                        _rotation_state["sweeper_candidate_dusk"]  = pool_now
+                    _rlog_info(f"sweeper: {pool_now:.4f} DUSK in pool — checking again in {STATE_CHECK_BLOCKS} blocks")
+            except Exception:
+                pass
 
         # ── Check if we were waiting for a node to reach ta=1 for re-seed ────
         with _state_lock:
@@ -603,18 +727,44 @@ def _run_sweeper(candidate_dusk: float, delta: float, blk_left: int) -> None:
                                and nodes.get(i,{}).get("ta") == 0), None)
 
         if in_snatch_or_rot and rot_slave_idx is not None:
+            # Cap to global available capacity (no slash penalty but capacity still applies)
+            try:
+                from .assess import _fetch_capacity_cached
+                cap       = _fetch_capacity_cached(_pw())
+                available = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
+                if available < min_sweep:
+                    _rlog_warn(f"sweeper: capacity full — available={available:.2f} DUSK — skipping")
+                    return
+                alloc_dusk = min(alloc_dusk, available)
+            except Exception as _ce:
+                _rlog_warn(f"sweeper: capacity check error: {_ce}")
+                return
             target_idx = rot_slave_idx
             label = "rot/snatch → rot_slave (ta=1, no slash)"
         elif rot_active_idx is not None:
-            # Check slash headroom for active top-up
+            # Check BOTH global capacity AND slash headroom for active top-up
             try:
-                from .assess import _fetch_capacity, _max_topup_active
-                cap      = _fetch_capacity(_pw())
+                from .assess import _fetch_capacity_cached, _max_topup_active
+                cap       = _fetch_capacity_cached(_pw())
+                # Global capacity: active_current already includes locked
+                available = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
+                if available < min_sweep:
+                    _rlog_warn(f"sweeper: capacity full — available={available:.2f} DUSK — skipping")
+                    return
+                # Slash headroom: additional constraint for topping up active node
                 headroom = _max_topup_active(cap)
                 if headroom <= 0:
-                    _rlog_warn(f"sweeper: rot_active headroom exhausted — skipping {alloc_dusk:.2f} DUSK")
+                    _rlog_warn(f"sweeper: rot_active slash headroom exhausted — skipping {alloc_dusk:.2f} DUSK")
+                    try:
+                        from .events import _dlog
+                        _dlog({"type":"deposit_skipped","step":0,
+                               "msg":f"sweeper: rot_active slash headroom exhausted — {alloc_dusk:.4f} DUSK stays in pool",
+                               "amount":alloc_dusk,"ok":False})
+                    except Exception:
+                        pass
                     return
-                alloc_dusk = min(alloc_dusk, headroom)
+                # Cap to the more restrictive of the two limits
+                alloc_dusk = min(alloc_dusk, available, headroom)
             except Exception as e:
                 _rlog_warn(f"sweeper: capacity check error: {e}")
                 return
@@ -629,14 +779,20 @@ def _run_sweeper(candidate_dusk: float, delta: float, blk_left: int) -> None:
             return
 
         from .wallet import WALLET_PATH
-        alloc_lux = int(alloc_dusk * 1e9)
+        alloc_lux = round(alloc_dusk * 1e9)
         _rlog_step(f"sweeper: {alloc_dusk:.4f} DUSK idle → prov[{target_idx}] [{label}]")
         r = _cmd(f"pool stake-activate --skip-confirmation "
                  f"--amount {alloc_lux} --provisioner {target_addr} "
                  f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
+        # Invalidate capacity cache regardless of result — either we used capacity or tx failed
+        try:
+            from .assess import _invalidate_capacity_cache
+            _invalidate_capacity_cache()
+        except Exception:
+            pass
+
         if r.get("ok"):
             _rlog_ok(f"sweeper: allocated {alloc_dusk:.4f} DUSK → prov[{target_idx}]")
-            # Mark this address so deposit race doesn't log the resulting activate event
             try:
                 from .events import mark_sweeper_activation
                 mark_sweeper_activation(target_addr)
@@ -740,17 +896,40 @@ def _seed_node(idx: int, amount_dusk: float, reason: str, nodes: dict = None) ->
             _rlog_warn(f"seed prov[{idx}] ({reason}): pool {pool:.2f} < {amount_dusk:.0f} DUSK — skipping")
             _set_state(ROTATING); return
 
-        amount_lux = int(amount_dusk * 1e9)
+        # Check global capacity — active_current already includes locked
+        try:
+            from .assess import _fetch_capacity_cached
+            cap       = _fetch_capacity_cached(_pw())
+            available = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
+            if available < amount_dusk:
+                _rlog_warn(f"seed prov[{idx}] ({reason}): capacity full — "
+                           f"available={available:.2f} DUSK < {amount_dusk:.0f} DUSK — skipping")
+                _set_state(ROTATING); return
+        except Exception as _ce:
+            _rlog_warn(f"seed prov[{idx}]: capacity check error: {_ce} — proceeding")
+
+        amount_lux = round(amount_dusk * 1e9)
         _rlog_step(f"seeding prov[{idx}] {amount_dusk:.0f} DUSK [{reason}]")
+        from .rues import register_tx_confirm as _rtc, get_tx_confirm_result as _gtcr
+        _seed_evt = _rtc("stake_activate", addr)
         r = _cmd(
             f"pool stake-activate --skip-confirmation "
             f"--amount {amount_lux} --provisioner {addr} "
             f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
-        if r.get("ok"):
-            _rlog_ok(f"prov[{idx}] seeded {amount_dusk:.0f} DUSK → maturing (ta=2)")
-        else:
+        if not r.get("ok"):
             err = r.get("stderr","")[:120]
-            _rlog_err(f"seed prov[{idx}] failed: {err}")
+            _rlog_err(f"seed prov[{idx}] failed (CLI): {err}")
+        else:
+            _rlog_info(f"seed prov[{idx}] tx sent — waiting for on-chain confirmation (120s)…")
+            if _seed_evt.wait(timeout=120):
+                _seed_res = _gtcr("stake_activate", addr)
+                _oc_err   = (_seed_res or {}).get("err")
+                if _oc_err:
+                    _rlog_err(f"seed prov[{idx}] FAILED on-chain: {str(_oc_err)[:120]}")
+                else:
+                    _rlog_ok(f"prov[{idx}] seeded {amount_dusk:.0f} DUSK → maturing (ta=2)")
+            else:
+                _rlog_warn(f"seed prov[{idx}] confirmation timeout — state check will verify")
     except Exception as e:
         _rlog_err(f"seed prov[{idx}] error: {e}")
     finally:
@@ -853,20 +1032,25 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
     # No bulk allocation — the other active node stays untouched.
     # Freed stake goes into pool; re-seed takes 1000 back out.
     _rlog_step(f"[3/3] re-seed prov[{smaller_idx}] with {SEED_DUSK:.0f} DUSK → ta=2")
-    seed_evt = register_tx_confirm("stake_activate")
-    seed_lux = int(SEED_DUSK * 1e9)
+    seed_evt = register_tx_confirm("stake_activate", addr)
+    seed_lux = round(SEED_DUSK * 1e9)
     r_seed   = _cmd(
         f"pool stake-activate --skip-confirmation "
         f"--amount {seed_lux} --provisioner {addr} "
         f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
     if not r_seed.get("ok"):
-        _rlog_err(f"[3/3] re-seed FAILED: {r_seed.get('stderr','')[:300]}")
+        _rlog_err(f"[3/3] re-seed FAILED (CLI): {r_seed.get('stderr','')[:300]}")
         _rlog_info("[3/3] state check will retry seeding from pool on next tick")
         _set_state(ROTATING); _bump_epoch(cur_epoch); return
-    _rlog_info("[3/3] re-seed tx sent — waiting for confirmation (120s)…")
+    _rlog_info("[3/3] re-seed tx sent — waiting for on-chain confirmation (120s)…")
     if not seed_evt.wait(timeout=120):
         _rlog_warn("[3/3] re-seed confirmation timeout — state check will verify")
     else:
+        _a2_res = get_tx_confirm_result("stake_activate", addr)
+        if (_a2_res or {}).get("err"):
+            _rlog_err(f"[3/3] re-seed FAILED on-chain: {str(_a2_res['err'])[:200]}")
+            _rlog_info("[3/3] state check will retry seeding from pool on next tick")
+            _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[3/3] prov[{smaller_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
 
     _rlog_ok(f"─── A:2 recovery epoch {cur_epoch} complete ✓ ───")
@@ -881,7 +1065,7 @@ def _run_rotation(cur_epoch: int) -> None:
     _set_state(IN_PROGRESS)
     try:
         from .wallet import WALLET_PATH
-        from .rues import register_tx_confirm
+        from .rues import register_tx_confirm, get_tx_confirm_result
 
         st    = _assess()
         nodes = st.get("by_idx", {})
@@ -973,8 +1157,10 @@ def _run_rotation(cur_epoch: int) -> None:
 
         # ── Step 3: allocate bulk to rot_slave (ta=1) ─────────────────────────
         # Allocate BEFORE re-seeding so the large amount lands safely first.
-        # If this fails, stake stays in pool and deposit race handles it.
-        # If re-seed fails after this, state check will seed from pool on next tick.
+        # Cap to available global capacity — active_current already includes locked.
+        # No capacity cap here — rotation recycles existing stake, not new external DUSK.
+        # active_current after liquidation = active_current before - (stake + locked),
+        # and we re-allocate exactly that amount back. Net capacity change = zero.
         alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK)
         _rlog_step(f"[3/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
         _rlog_info(
@@ -985,8 +1171,8 @@ def _run_rotation(cur_epoch: int) -> None:
         if alloc_dusk < 10.0:
             _rlog_warn(f"[3/4] only {alloc_dusk:.2f} DUSK to allocate — nothing sent to rot_slave")
         else:
-            alloc_lux = int(alloc_dusk * 1e9)
-            alloc_evt = register_tx_confirm("stake_activate")
+            alloc_lux = round(alloc_dusk * 1e9)
+            alloc_evt = register_tx_confirm("stake_activate", rot_slave_addr)
             r_alloc   = _cmd(
                 f"pool stake-activate --skip-confirmation "
                 f"--amount {alloc_lux} --provisioner {rot_slave_addr} "
@@ -994,29 +1180,39 @@ def _run_rotation(cur_epoch: int) -> None:
             if r_alloc.get("ok"):
                 _rlog_info(f"[3/4] allocation tx sent — waiting for confirmation (120s)…")
                 if alloc_evt.wait(timeout=120):
-                    _rlog_ok(f"[3/4] {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1) confirmed")
+                    _alloc_res = get_tx_confirm_result("stake_activate", rot_slave_addr)
+                    if (_alloc_res or {}).get("err"):
+                        _rlog_err(f"[3/4] allocation FAILED on-chain: {str(_alloc_res['err'])[:200]}")
+                        _rlog_info("[3/4] remaining stake stays in pool — deposit race will handle it")
+                    else:
+                        _rlog_ok(f"[3/4] {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1) confirmed")
                 else:
                     _rlog_warn(f"[3/4] allocation confirmation timeout — stake likely landed, continuing")
             else:
-                _rlog_err(f"[3/4] allocation failed: {r_alloc.get('stderr','')[:300]}")
+                _rlog_err(f"[3/4] allocation failed (CLI): {r_alloc.get('stderr','')[:300]}")
                 _rlog_info("[3/4] remaining stake stays in pool — deposit race will handle it")
 
         # ── Step 4: re-seed rot_active → ta=2 ────────────────────────────────
         _rlog_step(f"[4/4] re-seed prov[{rot_active_idx}] with {SEED_DUSK:.0f} DUSK → rot_seeded (ta=2)")
-        seed_evt = register_tx_confirm("stake_activate")
-        seed_lux = int(SEED_DUSK * 1e9)
+        seed_evt = register_tx_confirm("stake_activate", rot_active_addr)
+        seed_lux = round(SEED_DUSK * 1e9)
         r_seed   = _cmd(
             f"pool stake-activate --skip-confirmation "
             f"--amount {seed_lux} --provisioner {rot_active_addr} "
             f"--provisioner-wallet {WALLET_PATH} --provisioner-password '{_pw()}'")
         if not r_seed.get("ok"):
-            _rlog_err(f"[4/4] re-seed FAILED: {r_seed.get('stderr','')[:300]}")
+            _rlog_err(f"[4/4] re-seed FAILED (CLI): {r_seed.get('stderr','')[:300]}")
             _rlog_info("[4/4] state check will retry seeding from pool on next tick")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
-        _rlog_info(f"[4/4] re-seed tx sent — waiting for confirmation (120s)…")
+        _rlog_info(f"[4/4] re-seed tx sent — waiting for on-chain confirmation (120s)…")
         if not seed_evt.wait(timeout=120):
             _rlog_warn("[4/4] re-seed confirmation timeout — state check will verify")
         else:
+            _seed_res = get_tx_confirm_result("stake_activate", rot_active_addr)
+            if (_seed_res or {}).get("err"):
+                _rlog_err(f"[4/4] re-seed FAILED on-chain: {str(_seed_res['err'])[:200]}")
+                _rlog_info("[4/4] state check will retry seeding from pool on next tick")
+                _set_state(ROTATING); _bump_epoch(cur_epoch); return
             _rlog_ok(f"[4/4] prov[{rot_active_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
 
         _rlog_ok(f"─── rotation epoch {cur_epoch} complete ✓ ───")

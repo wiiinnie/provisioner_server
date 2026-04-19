@@ -32,34 +32,40 @@ _raw_log: deque = deque(maxlen=1000)
 _raw_log_lock     = threading.Lock()
 
 # ── Tx confirmation registry ──────────────────────────────────────────────────
-# rotation.py registers an Event keyed by fn_name; rues signals it on tx/executed
-# Format: {fn_name: {"event": threading.Event, "result": dict|None}}
+# rotation.py registers an Event keyed by (fn_name, prov_addr).
+# prov_addr="" means match any address (for liquidate/terminate which have no provisioner field).
+# Format: {(fn_name, prov_addr): {"event": threading.Event, "result": dict|None}}
 _tx_confirm: dict       = {}
 _tx_confirm_lock        = threading.Lock()
 
 
-def register_tx_confirm(fn_name: str) -> threading.Event:
-    """Register interest in the next tx/executed for fn_name. Returns Event to wait on."""
+def register_tx_confirm(fn_name: str, prov_addr: str = "") -> threading.Event:
+    """Register interest in the next tx/executed for (fn_name, prov_addr). Returns Event to wait on."""
     evt = threading.Event()
+    key = (fn_name, prov_addr)
     with _tx_confirm_lock:
-        _tx_confirm[fn_name] = {"event": evt, "result": None}
+        _tx_confirm[key] = {"event": evt, "result": None}
     return evt
 
 
-def get_tx_confirm_result(fn_name: str) -> dict | None:
+def get_tx_confirm_result(fn_name: str, prov_addr: str = "") -> dict | None:
     """After Event fires, retrieve the tx/executed decoded payload."""
+    key = (fn_name, prov_addr)
     with _tx_confirm_lock:
-        entry = _tx_confirm.pop(fn_name, None)
+        entry = _tx_confirm.pop(key, None)
         return entry["result"] if entry else None
 
 
-def _signal_tx_confirms(fn_name: str, decoded: dict) -> None:
-    """Called from _append_log when tx/executed arrives."""
+def _signal_tx_confirms(fn_name: str, decoded: dict, prov_addr: str = "") -> None:
+    """Called from _append_log when tx/executed arrives — signals exact (fn_name, prov_addr) match."""
     with _tx_confirm_lock:
-        entry = _tx_confirm.get(fn_name)
-        if entry and not entry["event"].is_set():
-            entry["result"] = decoded
-            entry["event"].set()
+        # Try exact match first, then fall back to wildcard (prov_addr="")
+        for key in [(fn_name, prov_addr), (fn_name, "")]:
+            entry = _tx_confirm.get(key)
+            if entry and not entry["event"].is_set():
+                entry["result"] = decoded
+                entry["event"].set()
+                break
 
 # All subscribable topics: key -> URL path template (CONTRACT_ID substituted at runtime)
 # Paths match Dusk RUES API exactly as documented.
@@ -72,6 +78,7 @@ TOPIC_PATHS = {
     "liquidate":        "/on/contracts:{cid}/liquidate",
     "reward":           "/on/contracts:{cid}/reward",
     "unstake":          "/on/contracts:{cid}/unstake",
+    "capacity_update":  "/on/contracts:{cid}/update_operator_max_capacity",
     "tx/included":      "/on/transactions/included",
     "tx/executed":      "/on/transactions/executed",
 }
@@ -98,6 +105,7 @@ _LOCATION_TO_KEY.update({
     "accepted": "block_accepted",
     "included": "tx/included",
     "executed": "tx/executed",
+    "update_operator_max_capacity": "capacity_update",
 })
 
 
@@ -321,27 +329,23 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
     # Signal any rotation waiting for tx confirmation
     if topic == "tx/executed" and isinstance(decoded, dict):
         try:
-            inner   = decoded.get("inner") or decoded
-            call    = inner.get("call") or {}
-            fn_name = call.get("fn_name", "")
-            err     = decoded.get("err")
-            # Always log fn_name so we can see what arrives (helps debug mismatches)
-            _log(f"[rues] tx/executed fn_name={fn_name!r} err={err!r} "
-                 f"waiting={list(_tx_confirm.keys())}")
-            if fn_name and err is None:
-                _signal_tx_confirms(fn_name, decoded)  # was missing decoded arg
-            # Decode fn_args into tx/executed entry so history events can read amount
-            # (tx/included gets decoded via fastpath, tx/executed is separate — copy here)
-            if fn_name and err is None and "_fn_args_decoded" not in call:
-                fn_args = call.get("fn_args", "")
-                if fn_args:
-                    try:
-                        from .routes.system import _decode_fn_args as _dfa
-                        result = _dfa(fn_name, fn_args)
-                        if result:
-                            call["_fn_args_decoded"] = result
-                    except Exception:
-                        pass
+            inner    = decoded.get("inner") or decoded
+            call     = inner.get("call") or {}
+            fn_name  = call.get("fn_name", "")
+            err      = decoded.get("err")
+            # Extract provisioner address for precise matching
+            fn_dec   = call.get("_fn_args_decoded") or {}
+            if isinstance(fn_dec, str):
+                prov_addr = ""
+            else:
+                prov_addr = (fn_dec.get("provisioner") or
+                             (fn_dec.get("keys") or {}).get("account") or
+                             ((fn_dec.get("provisioners") or [None])[0]) or "")
+            _log(f"[rues] tx/executed fn_name={fn_name!r} err={err!r} prov={prov_addr[:12] if prov_addr else '—'} "
+                 f"waiting={[f'{k[0]}:{k[1][:8] if k[1] else "*"}' for k in _tx_confirm.keys()]}")
+            # Signal regardless of err — caller checks result.get("err")
+            if fn_name:
+                _signal_tx_confirms(fn_name, decoded, prov_addr)
         except Exception as _sig_err:
             _log(f"[rues] tx/executed signal error: {_sig_err}")
 
@@ -360,27 +364,16 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
     except Exception:
         pass
 
-
-    # tx/included: always call handler (cache warming runs regardless of toggle;
-    # race firing only happens when get_tx_included_fastpath() is True)
+    # tx/included: warm assess+capacity caches so they're hot when contract event fires
     if topic == "tx/included" and isinstance(decoded, dict):
         try:
-            from .events import _handle_tx_included_fastpath, _on_tx_included_own, _on_tx_included_competitor
-            inner    = decoded.get("inner") or decoded
-            call     = inner.get("call") or {}
-            fn_name  = call.get("fn_name", "")
-            # Cache warming + optional race for deposit/reward tx/included
-            if fn_name in ("deposit", "stake", "recycle", "terminate", "sozu_unstake", "sozu_stake"):
-                _handle_tx_included_fastpath(decoded, height)
-            # Reaction time tracking for stake_activate (ours + competitors)
-            if fn_name == "stake_activate":
-                prov_decoded = call.get("_fn_args_decoded") or {}
-                prov_addr    = (prov_decoded.get("keys") or {}).get("account") or ""
-                amount_lux   = int(str(prov_decoded.get("value") or 0))
-                amount_dusk  = amount_lux / 1e9
-                if prov_addr:
-                    _on_tx_included_own(prov_addr)
-                    _on_tx_included_competitor(prov_addr, amount_dusk)
+            from .events import _warm_caches
+            inner   = decoded.get("inner") or decoded
+            call    = inner.get("call") or {}
+            fn_name = call.get("fn_name", "")
+            if fn_name in ("deposit", "stake", "recycle", "terminate"):
+                import threading as _thr
+                _thr.Thread(target=_warm_caches, daemon=True).start()
         except Exception:
             pass
 
