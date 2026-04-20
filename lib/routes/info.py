@@ -14,7 +14,7 @@ from ..config import (
     GAS_LIMIT, GRAPHQL_URL, _NODE_STATE_URL, NODE_INDICES,
 )
 from ..wallet import operator_cmd, wallet_cmd, run_cmd, get_password, WALLET_BIN, OPERATOR_WALLET
-from ..assess import _ensure_own_keys, parse_stake_info, EPOCH_BLOCKS
+from ..assess import parse_stake_info, EPOCH_BLOCKS
 from ..assess import _stake_cache, _stake_cache_lock
 
 bp = Blueprint("info", __name__)
@@ -36,8 +36,6 @@ def stake_info_all():
     op = OPERATOR_ADDRESS()
     if not op:
         return jsonify({"ok": False, "stderr": "operator_address not configured"}), 400
-    if pw:
-        threading.Thread(target=_ensure_own_keys, args=(pw,), daemon=True).start()
     r = operator_cmd(f"{_NET} stake-info --operator {op} --format json",
                      timeout=30, password=pw)
     stdout = r.get("stdout", "") or ""

@@ -23,7 +23,7 @@ _stake_cache_lock        = threading.Lock()
 
 # ── Stake history snapshots ───────────────────────────────────────────────────
 import collections as _collections
-_HISTORY_MAXLEN          = 1008          # ~7d at 10-block cadence (90s/block)
+_HISTORY_MAXLEN          = 6720          # 7d at 90s/snapshot cadence (Dusk ~10s/block)
 _stake_history: _collections.deque = _collections.deque(maxlen=_HISTORY_MAXLEN)
 _stake_history_lock      = threading.Lock()
 # Events are read directly from rues._event_log at query time — no separate store needed
@@ -103,9 +103,14 @@ def get_stake_history(max_blocks: int = 2160) -> dict:
         with _log_lock:
             raw_events = list(_event_log)
 
-        # Pass 1: tx/executed (err=null) → (fn_name, amount_lux_str) → block_height
-        # Also handles stake_activate where fn_dec.value is the amount
-        tx_block_lookup = {}   # (display_topic, amount_lux_str) → block_height
+        # Pass 1: build block_height lookup from tx/executed events.
+        # _fn_args_decoded shape differs by fn_name:
+        #   stake_activate:       dict with 'value' (amount) + 'keys.account' (BLS addr)
+        #   stake_deactivate /
+        #   liquidate / terminate: string (just the BLS addr)
+        # So we maintain two indexes and try addr first, amount as fallback.
+        tx_block_by_addr   = {}   # (display_topic, bls_addr)       → block
+        tx_block_by_amount = {}   # (display_topic, amount_lux_str) → block
         for entry in raw_events:
             if entry.get("topic") != "tx/executed":
                 continue
@@ -123,11 +128,17 @@ def get_stake_history(max_blocks: int = 2160) -> dict:
                 continue
             fn_dec = call.get("_fn_args_decoded") or {}
             if isinstance(fn_dec, str):
-                amt_str = fn_dec
-            else:
+                # deactivate / liquidate / terminate: args are just the BLS address
+                tx_block_by_addr[(display_topic, fn_dec)] = block
+            elif isinstance(fn_dec, dict):
+                # stake_activate: has both addr + amount, index by both
+                prov_key = (fn_dec.get("keys") or {}).get("account") \
+                           or fn_dec.get("provisioner") or fn_dec.get("account")
+                if prov_key:
+                    tx_block_by_addr[(display_topic, prov_key)] = block
                 amt_str = str(fn_dec.get("value") or fn_dec.get("amount_lux") or "")
-            if amt_str:
-                tx_block_lookup[(display_topic, amt_str)] = block
+                if amt_str:
+                    tx_block_by_amount[(display_topic, amt_str)] = block
 
         # Pass 2: contract events — canonical source for provisioner + amount
         for entry in raw_events:
@@ -152,8 +163,13 @@ def get_stake_history(max_blocks: int = 2160) -> dict:
             except Exception:
                 amt_dusk = None
 
-            # Enrich with block_height from tx/executed if available
-            block = tx_block_lookup.get((topic, amt_str), 0)
+            # Enrich with block_height from tx/executed — addr first
+            # (covers deactivate/liquidate/terminate), amount as fallback (activate).
+            block = 0
+            if prov_addr:
+                block = tx_block_by_addr.get((topic, prov_addr), 0)
+            if not block and amt_str:
+                block = tx_block_by_amount.get((topic, amt_str), 0)
 
             idx = addr_to_idx.get(prov_addr)
             addr_short = (prov_addr[:10] + "…" + prov_addr[-6:]) if prov_addr else ""
@@ -172,10 +188,6 @@ _ASSESS_CACHE_SECS: int      = 90
 _assess_cache_result: dict   = {}
 _assess_cache_ts: float      = 0.0
 _assess_cache_lock           = threading.Lock()
-
-_own_provisioner_keys: list  = []
-_own_provisioner_keys_lock   = threading.Lock()
-
 
 # ── Capacity cache ─────────────────────────────────────────────────────────────
 _CAPACITY_CACHE_SECS: int    = 60
@@ -223,35 +235,6 @@ def _assess_state_cached(tip: int, pw: str, force: bool = False) -> dict:
     return result
 
 
-def _ensure_own_keys(pw: str) -> None:
-    """Derive and cache BLS hex keys for our provisioners (used for event matching)."""
-    global _own_provisioner_keys
-    with _own_provisioner_keys_lock:
-        if _own_provisioner_keys:
-            return
-    keys = []
-    for idx in NODE_INDICES:
-        sk = cfg(f"prov_{idx}_sk") or ""
-        if not sk:
-            from .config import _get_sk
-            sk = _get_sk(idx)
-        if sk:
-            try:
-                r = operator_cmd(
-                    f"calculate-payload-stake-activate --provisioner-sk {sk} "
-                    f"--amount 1000000000 --network-id {NETWORK_ID()}",
-                    timeout=15, password=pw)
-                out = r.get("stdout", "") + r.get("stderr", "")
-                import re as _re
-                hexes = _re.findall(r'[0-9a-f]{32,}', out.lower())
-                if hexes:
-                    keys.append(max(hexes, key=len))
-            except Exception:
-                pass
-    with _own_provisioner_keys_lock:
-        _own_provisioner_keys = keys
-
-
 def _assess_state(tip: int, pw: str) -> dict:
     """
     Fetch stake-info for all provisioners via operator wallet (--format json).
@@ -262,7 +245,6 @@ def _assess_state(tip: int, pw: str) -> dict:
       maturing  — eligibility_epoch == current_epoch + 1  (ta=1)
       active    — eligibility_epoch <= current_epoch       (ta=0)
     """
-    _ensure_own_keys(pw)
     op = OPERATOR_ADDRESS()
     nodes_by_idx = {}
 

@@ -3,5 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 gunicorn.ctl
-
+*.bak
+*.bak-*
+patch_*.py
 

@@ -12,7 +12,6 @@ from ..config import (
     _log, NETWORK, CONTRACT_ID, _NODE_STATE_URL, RUSK_VERSION,
     WALLET_BIN, WALLET_PATH, NODE_INDICES, PORT,
     cfg, _cfg, _CONFIG_DEFAULTS, _load_config, _save_config,
-    _load_sks, _save_sks,
 )
 from ..wallet import run_cmd, wallet_cmd, get_password, _cache_wallet_pw, OPERATOR_WALLET
 
@@ -82,9 +81,6 @@ def get_config():
     from ..config import _cfg as _current_cfg
     cfg("network_id")
     safe = {k: v for k, v in _current_cfg.items() if not k.endswith("_sk")}
-    sks  = _load_sks()
-    for i in range(4):
-        safe[f"prov_{i}_sk_set"] = bool(sks.get(f"prov_{i}_sk"))
     return jsonify(safe)
 
 
@@ -111,14 +107,8 @@ def set_config():
     for k in str_keys:
         if k in data: current[k] = str(data[k]).strip()
     _save_config(current)
-    sks = _load_sks(); sk_updated = False
-    for key in ("prov_0_sk","prov_1_sk","prov_2_sk"):
-        if key in data and data[key]: sks[key]=str(data[key]).strip(); sk_updated=True
-    if sk_updated: _save_sks(sks)
-    safe = {k:v for k,v in current.items() if not k.endswith("_sk")}
-    sks_now = _load_sks()
-    for i in range(4): safe[f"prov_{i}_sk_set"] = bool(sks_now.get(f"prov_{i}_sk"))
-    return jsonify({"ok":True,"config":safe})
+    safe = {k: v for k, v in current.items() if not k.endswith("_sk")}
+    return jsonify({"ok": True, "config": safe})
 
 
 @bp.route("/api/config/reset", methods=["POST"])
@@ -214,12 +204,6 @@ def api_decode_fn_args():
     return jsonify({"ok":True,"fn_name":fn_name,"result":result})
 
 
-@bp.route("/api/debug/own_keys", methods=["GET","POST"])
-def debug_own_keys():
-    from ..assess import _own_provisioner_keys
-    return jsonify({"keys":list(_own_provisioner_keys)})
-
-
 # ── Stake history ─────────────────────────────────────────────────────────────
 
 @bp.route("/api/history/stake", methods=["GET"])
@@ -229,7 +213,7 @@ def history_stake():
         max_blocks = int(request.args.get("blocks", 2160))
     except (ValueError, TypeError):
         max_blocks = 2160
-    max_blocks = min(max_blocks, 15120)   # cap at 7d
+    max_blocks = min(max_blocks, 60480)   # cap at 7d (10s/block)
     return jsonify(get_stake_history(max_blocks))
 
 

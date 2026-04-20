@@ -112,7 +112,6 @@ CONTRACT_ID     = _SOZU_NET_CFG["pool"]
 
 # ── Dashboard config ───────────────────────────────────────────────────────────
 _CONFIG_PATH       = os.path.expanduser("~/.sozu_dashboard_config.json")
-_SK_PATH           = os.path.expanduser("~/.sozu_keys")
 _ROTATION_LOG_PATH = os.path.expanduser("~/.sozu_rotation.log")
 _ROTATION_STATE_PATH = os.path.expanduser("~/.sozu_rotation_enabled")
 
@@ -193,24 +192,6 @@ def OPERATOR_ADDRESS(): return cfg("operator_address")
 def NETWORK_ID():       return cfg("network_id") or 2
 def GAS_LIMIT():        return int(cfg("gas_limit") or 2000000)
 def GAS_PRICE():        return int(cfg("gas_price") or 1)
-
-# ── SK storage ─────────────────────────────────────────────────────────────────
-def _load_sks() -> dict:
-    if os.path.exists(_SK_PATH):
-        try:
-            with open(_SK_PATH) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def _save_sks(sks: dict) -> None:
-    with open(_SK_PATH, "w") as f:
-        json.dump(sks, f, indent=2)
-    os.chmod(_SK_PATH, 0o600)
-
-def _get_sk(idx: int) -> str:
-    return _load_sks().get(f"prov_{idx}_sk", "")
 
 # ── Rotation phase persistence ─────────────────────────────────────────────────
 _ROTATION_PHASE_PATH = os.path.expanduser("~/.sozu_rotation_phase")

@@ -442,6 +442,34 @@
   .mbtn-confirm:hover { background: #0f3526; }
   .mbtn-danger  { background: var(--red2); border-color: var(--red); color: var(--red); }
   .mbtn-danger:hover { background: #360f0f; }
+
+  /* ── COLLAPSIBLE PROV CARDS ── */
+  .prov-card .prov-header-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .prov-card .prov-header-row .prov-status {
+    margin-bottom: 0;
+    flex: 1;
+  }
+  .prov-card .prov-stake-preview {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .prov-card .prov-chevron {
+    font-size: 9px;
+    color: var(--dim);
+    width: 12px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .prov-card.collapsed .prov-details { display: none; }
+  .prov-card:not(.collapsed) .prov-header-row { margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -497,7 +525,7 @@
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-terminate')">terminate</button>
         <div style="width:1px;height:18px;background:var(--border);margin:0 6px;flex-shrink:0;"></div>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-add-prov')">add provisioner</button>
-        <button class="nav-btn nav-btn-action" onclick="openModal('modal-remove'); _populateRemoveModal()">remove provisioner</button>
+        <button class="nav-btn nav-btn-action" onclick="openModal('modal-remove')">remove provisioner</button>
       </div>
     </div>
     <div class="nav-row">
@@ -781,23 +809,9 @@
                color:var(--dim);cursor:pointer;">HISTORY</button>
     </div>
 
-    <!-- LIVE tab content: provisioner cards -->
+    <!-- LIVE tab content: provisioner cards (dynamic) -->
     <div id="prov-content-live" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;">
-      <div style="flex:1;min-height:0;border-bottom:1px solid var(--border);display:flex;flex-direction:column;">
-        <div id="node0-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 0</div>
-        <div id="node0-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
-      </div>
-      <div style="flex:1;min-height:0;border-bottom:1px solid var(--border);display:flex;flex-direction:column;">
-        <div id="node1-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 1</div>
-        <div id="node1-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
-      </div>
-      <div style="flex:1;min-height:0;display:flex;flex-direction:column;">
-        <div id="node2-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 2</div>
-        <div id="node2-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
-
-        <div id="node3-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;flex-shrink:0;">Provisioner 3</div>
-        <div id="node3-body" style="padding:0 14px 8px;flex:1;min-height:0;overflow-y:auto;"></div>
-      </div>
+      <div id="prov-cards-list"></div>
     </div>
 
     <!-- HISTORY tab content: stake chart + events -->
@@ -825,13 +839,13 @@
                    color:var(--dim);cursor:pointer;opacity:0.35;">pool</button>
         </div>
         <div style="display:flex;gap:3px;margin-left:auto;">
-          <button onclick="_histRange(360)" id="hist-r-6h"
+          <button onclick="_histRange(2160)" id="hist-r-6h"
             style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
                    border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;">6h</button>
-          <button onclick="_histRange(2160)" id="hist-r-24h"
+          <button onclick="_histRange(8640)" id="hist-r-24h"
             style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
                    border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;">24h</button>
-          <button onclick="_histRange(15120)" id="hist-r-7d"
+          <button onclick="_histRange(60480)" id="hist-r-7d"
             style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
                    border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--dim);cursor:pointer;">7d</button>
         </div>
@@ -880,18 +894,7 @@
         <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);">Operator wallet</span>
         <span style="font-size:10px;color:var(--dim);margin-left:auto;">~/sozu_operator</span>
       </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
-        <input type="radio" name="bal-target" value="0" style="accent-color:var(--teal);">
-        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);">Provisioner profile 0</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
-        <input type="radio" name="bal-target" value="1" style="accent-color:var(--teal);">
-        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);">Provisioner profile 1</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
-        <input type="radio" name="bal-target" value="2" style="accent-color:var(--teal);">
-        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);">Provisioner profile 2</span>
-      </label>
+      <div id="bal-prov-list" style="display:flex;flex-direction:column;gap:6px;"></div>
     </div>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-balance')">cancel</button>
@@ -942,35 +945,7 @@
   <div class="modal">
     <div class="modal-title">Stake Activate</div>
     <div class="modal-body" style="margin-bottom:12px;">Choose which provisioner(s) to stake, and enter the amount.</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;">
-      <label id="alloc-prov0-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="checkbox" id="alloc-check-0" style="accent-color:var(--cyan);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 0</span>
-          <span id="alloc-prov0-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="alloc-prov0-addr"  style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-        <span id="alloc-prov0-sk-indicator" style="font-size:9px;color:var(--dim);">no SK</span>
-      </label>
-      <label id="alloc-prov1-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="checkbox" id="alloc-check-1" style="accent-color:var(--cyan);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 1</span>
-          <span id="alloc-prov1-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="alloc-prov1-addr"  style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-        <span id="alloc-prov1-sk-indicator" style="font-size:9px;color:var(--dim);">no SK</span>
-      </label>
-      <label id="alloc-prov2-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="checkbox" id="alloc-check-2" style="accent-color:var(--cyan);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 2</span>
-          <span id="alloc-prov2-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="alloc-prov2-addr"  style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-        <span id="alloc-prov2-sk-indicator" style="font-size:9px;color:var(--dim);">no SK</span>
-      </label>
-    </div>
+    <div id="alloc-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <input class="modal-input" id="alloc-amt" type="number" placeholder="Amount in DUSK per selected provisioner" min="1" style="margin-bottom:4px;">
     <div id="alloc-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
     <div class="modal-actions">
@@ -985,32 +960,7 @@
   <div class="modal">
     <div class="modal-title">Deactivate Stake</div>
     <div class="modal-body" style="margin-bottom:12px;">Remove stake from a provisioner not yet in consensus (stake_deactivate).</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;">
-      <label id="deact-prov0-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="deact-prov" id="deact-radio-0" value="0" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 0</span>
-          <span id="deact-prov0-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="deact-prov0-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="deact-prov1-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="deact-prov" id="deact-radio-1" value="1" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 1</span>
-          <span id="deact-prov1-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="deact-prov1-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="deact-prov2-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="deact-prov" id="deact-radio-2" value="2" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 2</span>
-          <span id="deact-prov2-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="deact-prov2-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-    </div>
+    <div id="deact-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <div id="deact-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-deactivate')">cancel</button>
@@ -1028,32 +978,7 @@
   <div class="modal">
     <div class="modal-title">Liquidate</div>
     <div class="modal-body" style="margin-bottom:12px;">Slashes the provisioner's stake and returns funds to pool. Does <strong>not</strong> terminate — provisioner remains in inactive state afterwards. Use when you want to reclaim stake but keep the provisioner registered.</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;">
-      <label id="liq-prov0-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="liq-prov" id="liq-radio-0" value="0" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 0</span>
-          <span id="liq-prov0-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="liq-prov0-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="liq-prov1-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="liq-prov" id="liq-radio-1" value="1" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 1</span>
-          <span id="liq-prov1-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="liq-prov1-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="liq-prov2-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="liq-prov" id="liq-radio-2" value="2" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 2</span>
-          <span id="liq-prov2-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="liq-prov2-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-    </div>
+    <div id="liq-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <div id="liq-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-liquidate')">cancel</button>
@@ -1067,32 +992,7 @@
   <div class="modal">
     <div class="modal-title">Terminate</div>
     <div class="modal-body" style="margin-bottom:12px;">Removes provisioner from the contract registry. Provisioner must be liquidated first (inactive with 0 stake). Use after a standalone liquidate to fully clean up.</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;">
-      <label id="term-prov0-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="term-prov" id="term-radio-0" value="0" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 0</span>
-          <span id="term-prov0-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="term-prov0-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="term-prov1-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="term-prov" id="term-radio-1" value="1" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 1</span>
-          <span id="term-prov1-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="term-prov1-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label id="term-prov2-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="term-prov" id="term-radio-2" value="2" style="accent-color:var(--yellow);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 2</span>
-          <span id="term-prov2-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="term-prov2-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-    </div>
+    <div id="term-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <div id="term-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-terminate')">cancel</button>
@@ -1108,32 +1008,7 @@
   <div class="modal">
     <div class="modal-title">Remove Provisioner</div>
     <div class="modal-body" style="margin-bottom:12px;">Auto-detects stake status: active → liquidate+terminate first; maturing/inactive with stake → deactivate first. Then removes from pool contract. Cannot be undone.</div>
-    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="rem-prov" id="rem-radio-0" value="0" style="accent-color:var(--red);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 0</span>
-          <span id="rem-prov0-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="rem-prov0-addr"   style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="rem-prov" id="rem-radio-1" value="1" style="accent-color:var(--red);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 1</span>
-          <span id="rem-prov1-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="rem-prov1-addr"   style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
-        <input type="radio" name="rem-prov" id="rem-radio-2" value="2" style="accent-color:var(--red);width:14px;height:14px;">
-        <span style="flex:1;">
-          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner 2</span>
-          <span id="rem-prov2-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
-          <span id="rem-prov2-addr"   style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
-        </span>
-      </label>
-    </div>
+    <div id="rem-prov-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
     <div id="remove-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-remove')">cancel</button>
@@ -1150,6 +1025,113 @@
 const API = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   ? `${window.location.protocol}//localhost:7373`
   : `${window.location.protocol}//${window.location.host}`
+
+// ── DYNAMIC NODE INDICES ─────────────────────────────────────────────────────
+// Derived from _cfg.prov_N_address keys on config load. Drives modals, cards, history.
+let _NODE_INDICES = [0, 1, 2, 3]
+
+function _deriveNodeIndices(cfg) {
+  const indices = []
+  for (const key of Object.keys(cfg || {})) {
+    const m = /^prov_(\d+)_address$/.exec(key)
+    if (m) indices.push(parseInt(m[1]))
+  }
+  indices.sort((a, b) => a - b)
+  return indices.length ? indices : [0, 1, 2, 3]
+}
+
+// ── COLLAPSIBLE CARDS ────────────────────────────────────────────────────────
+const _expandedCards = new Set()  // idx of expanded cards; empty = all collapsed
+
+function _toggleCard(idx) {
+  const card = document.querySelector(`#node${idx}-body .prov-card`)
+  if (!card) return
+  if (_expandedCards.has(idx)) _expandedCards.delete(idx)
+  else _expandedCards.add(idx)
+  card.classList.toggle('collapsed')
+  const chev = card.querySelector('.prov-chevron')
+  if (chev) chev.textContent = card.classList.contains('collapsed') ? '▶' : '▼'
+}
+
+// ── DYNAMIC RENDERING: LIVE CARD CONTAINERS ──────────────────────────────────
+function _renderLiveCardContainers() {
+  const host = document.getElementById('prov-cards-list')
+  if (!host) return
+  host.innerHTML = _NODE_INDICES.map((idx, i) => {
+    const isLast = i === _NODE_INDICES.length - 1
+    const border = isLast ? '' : 'border-bottom:1px solid var(--border);'
+    return `<div style="flex-shrink:0;${border}display:flex;flex-direction:column;">
+      <div id="node${idx}-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;">Provisioner ${idx}</div>
+      <div id="node${idx}-body" style="padding:0 14px 8px;"></div>
+    </div>`
+  }).join('')
+}
+
+// ── DYNAMIC RENDERING: MODAL ROWS ────────────────────────────────────────────
+function _renderAllocModalRows() {
+  const host = document.getElementById('alloc-prov-list')
+  if (!host) return
+  host.innerHTML = _NODE_INDICES.map(idx => `
+    <label id="alloc-prov${idx}-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
+      <input type="checkbox" id="alloc-check-${idx}" style="accent-color:var(--cyan);width:14px;height:14px;">
+      <span style="flex:1;">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner ${idx}</span>
+        <span id="alloc-prov${idx}-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
+        <span id="alloc-prov${idx}-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
+      </span>
+      <span id="alloc-prov${idx}-sk-indicator" style="font-size:9px;color:var(--dim);">no SK</span>
+    </label>
+  `).join('')
+}
+
+function _renderRadioModalRows(prefix, accent) {
+  const host = document.getElementById(`${prefix}-prov-list`)
+  if (!host) return
+  host.innerHTML = _NODE_INDICES.map(idx => `
+    <label id="${prefix}-prov${idx}-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:4px;">
+      <input type="radio" name="${prefix}-prov" id="${prefix}-radio-${idx}" value="${idx}" style="accent-color:${accent};width:14px;height:14px;">
+      <span style="flex:1;">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;">Provisioner ${idx}</span>
+        <span id="${prefix}-prov${idx}-status" style="font-size:10px;color:var(--muted);margin-left:8px;"></span><br>
+        <span id="${prefix}-prov${idx}-addr" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--dim);">—</span>
+      </span>
+    </label>
+  `).join('')
+}
+
+function _renderBalanceModalRows() {
+  const host = document.getElementById('bal-prov-list')
+  if (!host) return
+  host.innerHTML = _NODE_INDICES.map(idx => `
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+      <input type="radio" name="bal-target" value="${idx}" style="accent-color:var(--teal);">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text);">Provisioner profile ${idx}</span>
+    </label>
+  `).join('')
+}
+
+// ── HISTORY: dynamic palette ─────────────────────────────────────────────────
+const _HIST_COLORS_PALETTE = ['#378ADD','#1D9E75','#BA7517','#A855F7','#E24B4A','#2dd4b8','#f59e0b','#ec4899']
+function _histColorFor(idx) { return _HIST_COLORS_PALETTE[idx % _HIST_COLORS_PALETTE.length] }
+
+function _renderHistToggles() {
+  const host = document.getElementById('hist-toggles')
+  if (!host) return
+  const provBtns = _NODE_INDICES.map(idx => {
+    const col = _histColorFor(idx)
+    const visible = _histIsVisible(idx)
+    return `<button id="hist-tog-${idx}" onclick="_histToggle(${idx})"
+      style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+             border:1px solid ${col};border-radius:3px;background:transparent;
+             color:${col};cursor:pointer;opacity:${visible?1:.3};">p${idx}</button>`
+  }).join('')
+  host.innerHTML = provBtns + `
+    <button id="hist-tog-pool" onclick="_histTogglePool()"
+      style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 7px;
+             border:1px solid ${_histPoolVisible?'var(--teal)':'var(--border)'};border-radius:3px;background:transparent;
+             color:${_histPoolVisible?'var(--teal)':'var(--dim)'};cursor:pointer;opacity:${_histPoolVisible?1:.35};">pool</button>
+  `
+}
 
 // ── PASSWORD ──────────────────────────────────────────────────────────────────
 function getPassword() {
@@ -1477,15 +1459,29 @@ function renderNodeCard(idx, node, container, syncInfo, si) {
       `</span></div>`
     : ''
 
+  const isExpanded = _expandedCards.has(idx)
+  const collapsedCls = isExpanded ? '' : 'collapsed'
+  const chevron = isExpanded ? '▼' : '▶'
+  // Compact stake preview for collapsed header (integer DUSK, or —)
+  const stakePreview = (si && si.stake)
+    ? (si.stake/1e9).toLocaleString('en-US', {maximumFractionDigits: 0}) + ' DUSK'
+    : ''
+
   container.innerHTML = `
-    <div class="prov-card">
-      <div class="prov-status ${cls}">${label}</div>
-      <div class="prov-row"><span>Stake</span><span>${stake}</span></div>
-      <div class="prov-row"><span>Locked</span><span style="color:${lockedColor}">${locked}</span></div>
-      <div class="prov-row"><span>Reward</span><span style="color:${rewardColor}">${reward}</span></div>
-      <div class="prov-row"><span>Eligible from</span><span style="color:var(--dim)">${eligBlk}${eligEpoch}</span></div>
-      ${faultsHtml}
-      ${syncHtml}
+    <div class="prov-card ${collapsedCls}">
+      <div class="prov-header-row" onclick="_toggleCard(${idx})">
+        <div class="prov-status ${cls}">${label}</div>
+        <div class="prov-stake-preview">${stakePreview}</div>
+        <span class="prov-chevron">${chevron}</span>
+      </div>
+      <div class="prov-details">
+        <div class="prov-row"><span>Stake</span><span>${stake}</span></div>
+        <div class="prov-row"><span>Locked</span><span style="color:${lockedColor}">${locked}</span></div>
+        <div class="prov-row"><span>Reward</span><span style="color:${rewardColor}">${reward}</span></div>
+        <div class="prov-row"><span>Eligible from</span><span style="color:var(--dim)">${eligBlk}${eligEpoch}</span></div>
+        ${faultsHtml}
+        ${syncHtml}
+      </div>
     </div>
   `
 }
@@ -1494,7 +1490,7 @@ function renderNodeCard(idx, node, container, syncInfo, si) {
 function renderAllProvCards() {
   const sync = {}   // no syncInfo needed here — fetchLivePanel handles that path
   const masterIdx = (_cfg && _cfg.master_idx !== undefined) ? parseInt(_cfg.master_idx) : -1
-  for (const i of [0, 1, 2, 3]) {
+  for (const i of _NODE_INDICES) {
     const container = document.getElementById(`node${i}-body`)
     if (!container) continue
     // Sync header master label + radio
@@ -1530,7 +1526,7 @@ function updateLivePanel(data) {
   const sync      = data.sync  || {}
   const tip       = data.tip
   const masterIdx = (_cfg && _cfg.master_idx !== undefined) ? parseInt(_cfg.master_idx) : -1
-  for (const idx of [0, 1, 2, 3]) {
+  for (const idx of _NODE_INDICES) {
     const hdr = document.getElementById(`node${idx}-header`)
     if (hdr) {
       const isMaster = (masterIdx === idx)
@@ -1544,7 +1540,7 @@ function updateLivePanel(data) {
         `<input type="checkbox" name="master-check" value="${idx}" ${radioChecked} onchange="setMasterIdx(${idx})" style="accent-color:var(--cyan);cursor:pointer;"> master</label>`
     }
   }
-  for (const i of [0, 1, 2]) {
+  for (const i of _NODE_INDICES) {
     const provAddr = _cfg ? (_cfg[`prov_${i}_address`] || '') : ''
     const si = provAddr && _stakeInfoByAddr[provAddr]
       ? _stakeInfoByAddr[provAddr]
@@ -1870,10 +1866,12 @@ function openModal(id) {
   document.getElementById(id)?.classList.add('open')
   if (id === 'modal-config')      loadConfig()
   if (id === 'modal-track') { document.getElementById('track-hash-input').value = ''; document.getElementById('track-status').textContent = '' }
-  if (id === 'modal-alloc-stake') _populateAllocModal()
-  if (id === 'modal-deactivate')  _populateAddrModal('deact')
-  if (id === 'modal-liquidate')   _populateAddrModal('liq')
-  if (id === 'modal-terminate')   _populateAddrModal('term')
+  if (id === 'modal-balance')     { _renderBalanceModalRows() }
+  if (id === 'modal-alloc-stake') { _renderAllocModalRows(); _populateAllocModal() }
+  if (id === 'modal-deactivate')  { _renderRadioModalRows('deact','var(--yellow)'); _populateAddrModal('deact') }
+  if (id === 'modal-liquidate')   { _renderRadioModalRows('liq','var(--yellow)'); _populateAddrModal('liq') }
+  if (id === 'modal-terminate')   { _renderRadioModalRows('term','var(--yellow)'); _populateAddrModal('term') }
+  if (id === 'modal-remove')      { _renderRadioModalRows('rem','var(--red)'); _populateRemoveModal() }
 }
 
 document.addEventListener('click', e => {
@@ -1882,6 +1880,10 @@ document.addEventListener('click', e => {
 
 // Initial load — populate config fields
 loadConfig().then(() => {
+  // Derive node indices from config, then build card containers before first render
+  _NODE_INDICES = _deriveNodeIndices(_cfg)
+  _renderLiveCardContainers()
+  _renderHistToggles()
   // Show empty provisioner cards immediately so layout is correct before stake-info loads
   renderAllProvCards()
 
@@ -1929,24 +1931,21 @@ async function _populateAllocModal() {
   // Use _cfg and _stakeInfoByAddr (same source as provisioner cards)
   const cfg_r = _cfg || await fetch(`${API}/api/config`).then(r=>r.json()).catch(()=>({}))
 
-  for (const idx of [0,1,2]) {
+  for (const idx of _NODE_INDICES) {
     const addr  = cfg_r[`prov_${idx}_address`] || ''
     const short = addr ? addr.slice(0,10)+'…'+addr.slice(-6) : '—'
     const si    = addr ? (_stakeInfoByAddr[addr] || null) : null
     const status = si ? si.status : ''
     const stake  = (si && si.stake) ? `${(si.stake/1e9).toLocaleString('en-US',{maximumFractionDigits:0})} DUSK` : ''
-    const skSet  = cfg_r[`prov_${idx}_sk_set`]
-
     document.getElementById(`alloc-prov${idx}-addr`).textContent  = short
     document.getElementById(`alloc-prov${idx}-status`).textContent = status ? `(${status}${stake ? ' · '+stake : ''})` : ''
+    // SK export no longer required — wallet password is sufficient
     const skEl = document.getElementById(`alloc-prov${idx}-sk-indicator`)
-    skEl.textContent = skSet ? '✓ SK' : 'no SK'
-    skEl.style.color = skSet ? 'var(--green)' : 'var(--red)'
+    if (skEl) { skEl.textContent = '✓'; skEl.style.color = 'var(--green)' }
     const cb = document.getElementById(`alloc-check-${idx}`)
-    cb.disabled = !skSet
+    if (cb) cb.disabled = false
     const lbl = document.getElementById(`alloc-prov${idx}-label`)
-    lbl.style.opacity = skSet ? '1' : '0.45'
-    lbl.style.cursor  = skSet ? 'pointer' : 'not-allowed'
+    if (lbl) { lbl.style.opacity = '1'; lbl.style.cursor = 'pointer' }
   }
 }
 
@@ -1979,7 +1978,7 @@ async function doAllocateStake() {
     document.getElementById('alloc-status').textContent = 'Enter an amount ≥ 1 DUSK'
     return
   }
-  const checked = [0,1,2].filter(i => document.getElementById(`alloc-check-${i}`)?.checked)
+  const checked = _NODE_INDICES.filter(i => document.getElementById(`alloc-check-${i}`)?.checked)
   if (checked.length === 0) {
     document.getElementById('alloc-status').textContent = 'Select at least one provisioner'
     return
@@ -2004,7 +2003,7 @@ async function _populateAddrModal(prefix) {
     fetch(`${API}/api/config`, {credentials:'include'}).then(r=>r.json()).catch(()=>({}))
   ])
 
-  for (const idx of [0, 1, 2]) {
+  for (const idx of _NODE_INDICES) {
     const node   = live_r.nodes?.[String(idx)] || {}
     // prefer live staking_address, fall back to config prov_N_address
     const addr   = node.staking_address || cfg_r[`prov_${idx}_address`] || ''
@@ -2069,7 +2068,7 @@ async function doRemoveProvisioner() {
 
 async function _populateRemoveModal() {
   const cfg_r = await fetch(`${API}/api/config`).then(r=>r.json()).catch(()=>({}))
-  for (const idx of [0,1,2]) {
+  for (const idx of _NODE_INDICES) {
     const addr  = cfg_r[`prov_${idx}_address`] || ''
     const short = addr ? addr.slice(0,10)+'…'+addr.slice(-6) : '—'
     const si    = _stakeInfoByAddr[addr] || null
@@ -2973,11 +2972,14 @@ _pollRotation()
 // ── HISTORY TAB ──────────────────────────────────────────────────────────────
 
 let _histChart       = null
-let _histVisible     = [true, true, true]
+// _histVisibleMap: idx -> bool. Missing keys default to true. Replaces the old 3-element array.
+const _histVisibleMap = {}
+function _histIsVisible(idx) { return _histVisibleMap[idx] !== false }
 let _histPoolVisible = false   // pool events hidden by default
-let _histRangeBlocks = 2160   // default 24h (~2160 blocks)
-const _histColors    = ['#378ADD', '#1D9E75', '#BA7517']
-const _histProvNames = ['prov 0', 'prov 1', 'prov 2']
+let _histRangeBlocks = 8640   // default 24h at 10s/block
+// Legacy name kept for any external references; color/name helpers derive from _NODE_INDICES
+const _histColors    = new Proxy({}, { get: (_, p) => _histColorFor(parseInt(p)) })
+const _histProvNames = new Proxy({}, { get: (_, p) => `prov ${p}` })
 
 function _provTab(tab) {
   const isLive = tab === 'live'
@@ -2993,12 +2995,16 @@ function _provTab(tab) {
 }
 
 function _histToggle(idx) {
-  _histVisible[idx] = !_histVisible[idx]
+  _histVisibleMap[idx] = !_histIsVisible(idx)
   const btn = document.getElementById(`hist-tog-${idx}`)
-  btn.style.opacity = _histVisible[idx] ? '1' : '0.3'
+  if (btn) btn.style.opacity = _histIsVisible(idx) ? '1' : '0.3'
   if (_histChart) {
-    _histChart.data.datasets[idx].hidden = !_histVisible[idx]
-    _histChart.update('none')
+    // Datasets are ordered by _NODE_INDICES — find position
+    const pos = _NODE_INDICES.indexOf(idx)
+    if (pos >= 0 && _histChart.data.datasets[pos]) {
+      _histChart.data.datasets[pos].hidden = !_histIsVisible(idx)
+      _histChart.update('none')
+    }
   }
   _histRenderEvents()
 }
@@ -3028,7 +3034,7 @@ function _histRange(blocks) {
     if (!btn) return
     btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--dim)'
   })
-  const labelMap = {360:'6h', 2160:'24h', 15120:'7d'}
+  const labelMap = {2160:'6h', 8640:'24h', 60480:'7d'}
   const activeBtn = document.getElementById(`hist-r-${labelMap[blocks]}`)
   if (activeBtn) { activeBtn.style.borderColor = 'var(--teal)'; activeBtn.style.color = 'var(--teal)' }
   _histLoad()
@@ -3052,13 +3058,12 @@ function _histBuild(r) {
   // Build per-provisioner data arrays aligned to snapshot blocks
   const labels = snapshots.map(s => s.block)
 
-  const datasets = [0,1,2].map(idx => {
+  const datasets = _NODE_INDICES.map(idx => {
     const data = snapshots.map(s => {
       const n = (s.nodes || {})[idx]
       return n != null ? Math.round(n.stake_dusk) : null
     })
 
-    // Build event point overlays — one dot per event at the closest snapshot only
     const evtForIdx = events.filter(e => e.idx === idx)
     const dotSet = new Map()
     evtForIdx.forEach(evt => {
@@ -3078,14 +3083,14 @@ function _histBuild(r) {
     })
 
     return {
-      label:                _histProvNames[idx],
+      label:                `prov ${idx}`,
       data,
-      borderColor:          _histColors[idx],
+      borderColor:          _histColorFor(idx),
       borderWidth:          1.5,
       tension:              0,
       fill:                 false,
       spanGaps:             true,
-      hidden:               !_histVisible[idx],
+      hidden:               !_histIsVisible(idx),
       pointRadius:          pointRadii,
       pointBackgroundColor: pointColors,
       pointBorderColor:     'transparent',
@@ -3179,7 +3184,7 @@ function _histRenderEvents() {
   }[t] || t)
 
   const rows = events
-    .filter(e => e.idx === null ? _histPoolVisible : _histVisible[e.idx])
+    .filter(e => e.idx === null ? _histPoolVisible : _histIsVisible(e.idx))
     .slice(0, 50)
     .map(e => {
       const amt = e.amount_dusk != null
@@ -3192,7 +3197,7 @@ function _histRenderEvents() {
         <span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;
                      background:${topicColor(e.topic)};display:inline-block;"></span>
         <span style="color:var(--dim);min-width:60px;">#${Number(e.block).toLocaleString()}</span>
-        <span style="color:${e.idx !== null ? _histColors[e.idx] : 'var(--dim)'};min-width:36px;">${e.idx !== null ? 'p'+e.idx : 'pool'}</span>
+        <span style="color:${e.idx !== null ? _histColorFor(e.idx) : 'var(--dim)'};min-width:36px;">${e.idx !== null ? 'p'+e.idx : 'pool'}</span>
         <span style="color:var(--dim);flex:1;">${topicLabel(e.topic)}</span>
         ${amt}
       </div>`
@@ -3299,8 +3304,8 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Snatch Min Deposit (DUSK)<br><span style="font-size:10px;color:var(--dim)">lower threshold active only during snatch window (≤11 blk to epoch end) — set below regular to capture smaller last-minute deposits</span></label>
       <input class="modal-input" id="cfg-snatch-min-deposit" type="number" step="10" min="0" style="margin:0;" placeholder="100">
 
-      <label style="font-size:11px;color:var(--muted);">Master Node Index<br><span style="font-size:10px;color:var(--dim)">provisioner that holds master stake; -1 = auto-detect</span></label>
-      <input class="modal-input" id="cfg-master-idx" type="number" step="1" min="-1" max="2" style="margin:0;" placeholder="-1">
+      <label style="font-size:11px;color:var(--muted);">Master Node Index<br><span style="font-size:10px;color:var(--dim)">provisioner index that holds master stake; -1 = auto-detect</span></label>
+      <input class="modal-input" id="cfg-master-idx" type="number" step="1" min="-1" style="margin:0;" placeholder="-1">
 
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Transaction</label>
 

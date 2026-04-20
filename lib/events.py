@@ -395,6 +395,9 @@ def _warm_caches() -> None:
 def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
     """Step 2: tx/executed for stake_activate — win or loss."""
     global _race_wins, _race_losses
+    # tx/executed always carries block_height in its payload; param may be None
+    # depending on rues dispatcher. Prefer the payload value.
+    block_height = decoded.get("block_height") or block_height
     inner = decoded.get("inner") or decoded
     call  = inner.get("call") or {}
     if call.get("fn_name") != "stake_activate":
@@ -414,6 +417,13 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
 
     with _pending_lock:
         pending = _pending_activations.get(prov_addr)
+
+    # Deposit race log is reserved for actual races. _do_allocate (the
+    # deposit-race path) is the only code that writes _pending_activations.
+    # Manual UI allocations and sweeper activations bypass it, so pending
+    # being None means this tx was NOT a race — skip the log + counter.
+    if pending is None:
+        return
 
     now = time.time()
     exec_elapsed     = round(now - pending["wall_ts"], 1)      if pending else None

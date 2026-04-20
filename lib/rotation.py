@@ -987,7 +987,7 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
     No bulk allocation (no ta=1 target exists).
     """
     from .wallet import WALLET_PATH
-    from .rues import register_tx_confirm
+    from .rues import register_tx_confirm, get_tx_confirm_result
 
     addr        = _addr(smaller_idx, nodes)
     stake_dusk  = nodes[smaller_idx].get("stake_dusk", 0.0)
@@ -1000,7 +1000,7 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
 
     # ── Step 1: liquidate ─────────────────────────────────────────────────────
     _rlog_step(f"[1/3] liquidate prov[{smaller_idx}]")
-    liq_evt = register_tx_confirm("liquidate")
+    liq_evt = register_tx_confirm("liquidate", addr)
     r_liq   = _cmd(f"pool liquidate --skip-confirmation --provisioner {addr}")
     if not r_liq.get("ok"):
         err = r_liq.get("stderr","")[:300]
@@ -1016,11 +1016,17 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
     if not liq_evt.wait(timeout=120):
         _rlog_err("[1/3] liquidate confirmation timeout — aborting A:2 recovery")
         _set_state(ROTATING); _bump_epoch(cur_epoch); return
+    # Verify on-chain err (tx made it to a block but may have reverted)
+    _liq_res = get_tx_confirm_result("liquidate", addr)
+    _liq_err = (_liq_res or {}).get("err")
+    if _liq_err:
+        _rlog_err(f"[1/3] liquidate REVERTED on-chain: {str(_liq_err)[:200]} — aborting A:2 recovery")
+        _set_state(ROTATING); _bump_epoch(cur_epoch); return
     _rlog_ok(f"[1/3] liquidate confirmed — {stake_dusk + locked_dusk:.4f} DUSK freed to pool")
 
     # ── Step 2: terminate ─────────────────────────────────────────────────────
     _rlog_step(f"[2/3] terminate prov[{smaller_idx}] (free rewards)")
-    term_evt = register_tx_confirm("terminate")
+    term_evt = register_tx_confirm("terminate", addr)
     r_term   = _cmd(f"pool terminate --skip-confirmation --provisioner {addr}")
     if not r_term.get("ok"):
         err = r_term.get("stderr","")[:300]
@@ -1031,10 +1037,18 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
     else:
         _rlog_info("[2/3] terminate tx sent — waiting for confirmation (120s)…")
         if term_evt.wait(timeout=120):
-            _rlog_ok(f"[2/3] terminate confirmed — {reward_dusk:.4f} DUSK rewards freed")
-            with _state_lock:
-                _rotation_state["pending_terminate"] = None
-            _save_state()
+            _term_res = get_tx_confirm_result("terminate", addr)
+            _term_err = (_term_res or {}).get("err")
+            if _term_err:
+                _rlog_err(f"[2/3] terminate REVERTED on-chain: {str(_term_err)[:200]} — marking for retry")
+                with _state_lock:
+                    _rotation_state["pending_terminate"] = addr
+                _save_state()
+            else:
+                _rlog_ok(f"[2/3] terminate confirmed — {reward_dusk:.4f} DUSK rewards freed")
+                with _state_lock:
+                    _rotation_state["pending_terminate"] = None
+                _save_state()
         else:
             _rlog_err("[2/3] terminate confirmation timeout — marking for retry")
             with _state_lock:
@@ -1125,7 +1139,7 @@ def _run_rotation(cur_epoch: int) -> None:
 
         # ── Step 1: liquidate ─────────────────────────────────────────────────
         _rlog_step(f"[1/4] liquidate prov[{rot_active_idx}]")
-        liq_evt = register_tx_confirm("liquidate")
+        liq_evt = register_tx_confirm("liquidate", rot_active_addr)
         r_liq   = _cmd(f"pool liquidate --skip-confirmation --provisioner {rot_active_addr}")
         if not r_liq.get("ok"):
             err = r_liq.get("stderr","")[:300]
@@ -1141,11 +1155,17 @@ def _run_rotation(cur_epoch: int) -> None:
         if not liq_evt.wait(timeout=120):
             _rlog_err("[1/4] liquidate confirmation timeout — aborting rotation")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
+        # Verify on-chain err (tx made it to a block but may have reverted)
+        _liq_res = get_tx_confirm_result("liquidate", rot_active_addr)
+        _liq_err = (_liq_res or {}).get("err")
+        if _liq_err:
+            _rlog_err(f"[1/4] liquidate REVERTED on-chain: {str(_liq_err)[:200]} — aborting rotation")
+            _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[1/4] liquidate confirmed — {freed_by_liquidate:.4f} DUSK freed to pool")
 
         # ── Step 2: terminate ─────────────────────────────────────────────────
         _rlog_step(f"[2/4] terminate prov[{rot_active_idx}] (free rewards)")
-        term_evt = register_tx_confirm("terminate")
+        term_evt = register_tx_confirm("terminate", rot_active_addr)
         r_term   = _cmd(f"pool terminate --skip-confirmation --provisioner {rot_active_addr}")
         if not r_term.get("ok"):
             err = r_term.get("stderr","")[:300]
@@ -1157,10 +1177,19 @@ def _run_rotation(cur_epoch: int) -> None:
         else:
             _rlog_info(f"[2/4] terminate tx sent — waiting for tx/executed confirmation (120s)…")
             if term_evt.wait(timeout=120):
-                _rlog_ok(f"[2/4] terminate confirmed — {reward_dusk:.4f} DUSK rewards freed to pool")
-                with _state_lock:
-                    _rotation_state["pending_terminate"] = None
-                _save_state()
+                _term_res = get_tx_confirm_result("terminate", rot_active_addr)
+                _term_err = (_term_res or {}).get("err")
+                if _term_err:
+                    _rlog_err(f"[2/4] terminate REVERTED on-chain: {str(_term_err)[:200]} — marking for retry")
+                    freed_by_terminate = 0.0
+                    with _state_lock:
+                        _rotation_state["pending_terminate"] = rot_active_addr
+                    _save_state()
+                else:
+                    _rlog_ok(f"[2/4] terminate confirmed — {reward_dusk:.4f} DUSK rewards freed to pool")
+                    with _state_lock:
+                        _rotation_state["pending_terminate"] = None
+                    _save_state()
             else:
                 _rlog_err("[2/4] terminate confirmation timeout — marking for retry")
                 freed_by_terminate = 0.0

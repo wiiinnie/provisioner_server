@@ -33,7 +33,7 @@ _raw_log_lock     = threading.Lock()
 
 # ── Tx confirmation registry ──────────────────────────────────────────────────
 # rotation.py registers an Event keyed by (fn_name, prov_addr).
-# prov_addr="" means match any address (for liquidate/terminate which have no provisioner field).
+# prov_addr="" means match any address (wildcard fallback).
 # Format: {(fn_name, prov_addr): {"event": threading.Event, "result": dict|None}}
 _tx_confirm: dict       = {}
 _tx_confirm_lock        = threading.Lock()
@@ -333,10 +333,16 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
             call     = inner.get("call") or {}
             fn_name  = call.get("fn_name", "")
             err      = decoded.get("err")
-            # Extract provisioner address for precise matching
+            # Extract provisioner address for precise matching.
+            # Three shapes observed:
+            #   - dict with 'provisioner' key        (e.g. stake_activate → fn_dec.provisioner)
+            #   - dict with 'keys.account' path      (alternate stake shape)
+            #   - dict with 'provisioners' list      (batch shape)
+            #   - bare string (BLS address)          (liquidate, terminate — the address IS the args)
             fn_dec   = call.get("_fn_args_decoded") or {}
             if isinstance(fn_dec, str):
-                prov_addr = ""
+                # liquidate/terminate: _fn_args_decoded is the bare provisioner address
+                prov_addr = fn_dec
             else:
                 prov_addr = (fn_dec.get("provisioner") or
                              (fn_dec.get("keys") or {}).get("account") or
