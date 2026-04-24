@@ -41,6 +41,11 @@ _race_wins:   int = 0
 _race_losses: int = 0
 _race_lock         = threading.Lock()
 
+# Race-lost bookkeeping: track competitor deposit amounts we've seen so
+# we can detect when their tx/included arrives and we lost the race to them.
+_race_lost_amounts: dict = {}
+_race_lost_lock            = threading.Lock()
+
 _recent_alloc:      dict = {}
 _recent_alloc_lock         = threading.Lock()
 
