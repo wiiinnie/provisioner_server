@@ -1,125 +1,187 @@
-"""
-telegram.py — Telegram notification helpers for SOZU Dashboard.
-
-Sends alerts via Telegram Bot API using a simple HTTP POST.
-No third-party libraries required — uses urllib only.
-
-Config keys:
-    telegram_bot_token  — Bot token from @BotFather
-    telegram_chat_id    — Chat/group ID to send messages to
-
-Alerts are rate-limited: the same alert key will not fire more than once
-per cooldown period (default 1 epoch = 2160 blocks ≈ 5.4 hours).
-"""
-import json
-import threading
+# lib/telegram.py — rate-limited TG alert helpers
+import os
 import time
-import urllib.request as _ur
-import urllib.error   as _ue
+import threading
+import requests
 
-from .config import cfg, _log
+from .config import _log, cfg
 
-# ── Rate limiting ──────────────────────────────────────────────────────────────
-# Maps alert_key → last_sent_timestamp
-_alert_last_sent: dict  = {}
-_alert_lock              = threading.Lock()
-
-# Cooldown: don't re-send same alert more than once per period (seconds)
-ALERT_COOLDOWN_S = 6 * 3600   # 6 hours
+# ── Rate-limit per alert key ──────────────────────────────────────────────────
+# Each alert key has its own cooldown window. If an alert fires within the
+# cooldown, it's suppressed silently.
+_COOLDOWN_SEC = 30 * 60   # 30 min default cooldown between repeat alerts
+_last_sent: dict = {}
+_lock = threading.Lock()
 
 
 def _can_send(alert_key: str) -> bool:
-    """Return True if this alert key is not in cooldown."""
-    with _alert_lock:
-        last = _alert_last_sent.get(alert_key, 0.0)
-        if time.time() - last >= ALERT_COOLDOWN_S:
-            _alert_last_sent[alert_key] = time.time()
-            return True
-    return False
+    if not alert_key:
+        return True   # untagged alerts always send
+    with _lock:
+        last = _last_sent.get(alert_key, 0)
+        now  = time.time()
+        if now - last < _COOLDOWN_SEC:
+            return False
+        _last_sent[alert_key] = now
+    return True
 
 
 def reset_alert(alert_key: str) -> None:
-    """Clear cooldown for an alert key (e.g. when condition resolves)."""
-    with _alert_lock:
-        _alert_last_sent.pop(alert_key, None)
+    """Call when the underlying condition clears, so the next crossing re-alerts."""
+    with _lock:
+        _last_sent.pop(alert_key, None)
 
 
 def send(message: str, alert_key: str = "", parse_mode: str = "HTML") -> bool:
-    """
-    Send a Telegram message.
-
-    Args:
-        message:    Text to send. Supports HTML formatting when parse_mode="HTML".
-        alert_key:  If set, rate-limits this alert. Empty string = always send.
-        parse_mode: "HTML" or "Markdown" or "" for plain text.
-
-    Returns True if sent successfully, False otherwise.
-    """
-    bot_token = cfg("telegram_bot_token") or ""
-    chat_id   = cfg("telegram_chat_id")   or ""
-
-    if not bot_token or not chat_id:
-        _log("[telegram] not configured — skipping notification")
+    token = cfg("telegram_bot_token") or ""
+    chat  = cfg("telegram_chat_id")   or ""
+    if not token or not chat:
         return False
-
-    if alert_key and not _can_send(alert_key):
-        _log(f"[telegram] alert '{alert_key}' in cooldown — skipping")
+    if not _can_send(alert_key):
         return False
-
-    url     = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-
     try:
-        data = json.dumps(payload).encode()
-        req  = _ur.Request(url, data=data,
-                           headers={"Content-Type": "application/json"},
-                           method="POST")
-        with _ur.urlopen(req, timeout=10) as r:
-            resp = json.loads(r.read())
-            if resp.get("ok"):
-                _log(f"[telegram] sent: {message[:80]}…")
-                return True
-            _log(f"[telegram] API error: {resp}")
-            raise RuntimeError(f"Telegram API error: {resp.get('description', resp)}")
-    except _ue.URLError as e:
-        _log(f"[telegram] network error: {e}")
-        return False
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={
+                "chat_id":    chat,
+                "text":       message,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True,
+            },
+            timeout=8,
+        )
+        if r.status_code != 200:
+            _log(f"[telegram] send failed: {r.status_code} {r.text[:120]}")
+            return False
+        return True
     except Exception as e:
-        _log(f"[telegram] error: {e}")
+        _log(f"[telegram] send error: {e}")
         return False
 
 
 def send_async(message: str, alert_key: str = "", parse_mode: str = "HTML") -> None:
-    """Fire-and-forget version — runs in background thread."""
     threading.Thread(
-        target=send,
-        args=(message, alert_key, parse_mode),
-        daemon=True,
+        target=send, args=(message, alert_key, parse_mode), daemon=True
     ).start()
 
 
-# ── Pre-built alert templates ─────────────────────────────────────────────────
+# ── Master-heal alerts ────────────────────────────────────────────────────────
 
 def alert_master_below_threshold(
         prov_idx: int,
         stake_dusk: float,
-        threshold_dusk: float,
-        threshold_pct: float,
-        active_maximum_dusk: float,
+        alert_threshold_dusk: float,
+        alert_threshold_pct: float,
+        target_master_dusk: float,
 ) -> None:
-    """Send master stake threshold alert."""
+    """Fired when master stake drops below the ALERT threshold (but heal has
+    not yet triggered — heal fires at the lower heal threshold).
+    """
     msg = (
-        f"⚠️ <b>SOZU — Master Node Alert</b>\n\n"
-        f"prov{prov_idx} stake has fallen below the threshold.\n\n"
+        f"⚠️ <b>SOZU — Master Alert</b>\n\n"
+        f"prov{prov_idx} stake has crossed the alert threshold.\n\n"
         f"<b>Current stake:</b> {stake_dusk:,.2f} DUSK\n"
-        f"<b>Threshold ({threshold_pct:.0f}% of max):</b> {threshold_dusk:,.2f} DUSK\n"
-        f"<b>Max capacity:</b> {active_maximum_dusk:,.0f} DUSK\n\n"
-        f"Manual intervention required to restore master stake.\n"
-        f"See dashboard for current state."
+        f"<b>Alert threshold ({alert_threshold_pct:.0f}% of target):</b> "
+        f"{alert_threshold_dusk:,.2f} DUSK\n"
+        f"<b>Target master:</b> {target_master_dusk:,.0f} DUSK\n\n"
+        f"Heal will trigger automatically if stake drops further to the heal "
+        f"threshold. No manual action needed."
     )
-    send_async(msg, alert_key="master_below_threshold")
+    send_async(msg, alert_key="master_below_alert_threshold")
+
+
+def alert_heal_triggered(
+        prov_idx: int,
+        standby_idx: int,
+        stake_dusk: float,
+        heal_threshold_dusk: float,
+        heal_threshold_pct: float,
+) -> None:
+    """Fired when heal transitions IDLE → AWAITING_N (master below heal threshold)."""
+    msg = (
+        f"🔧 <b>SOZU — Heal Triggered</b>\n\n"
+        f"Master prov{prov_idx} stake {stake_dusk:,.2f} DUSK has fallen below "
+        f"the heal threshold {heal_threshold_dusk:,.2f} DUSK "
+        f"({heal_threshold_pct:.0f}% of target).\n\n"
+        f"Standby prov{standby_idx} will be seeded at the next rotation window. "
+        f"The full heal cycle takes ~3 epochs."
+    )
+    send_async(msg, alert_key="heal_triggered")
+
+
+def alert_heal_seeded(prov_idx: int, standby_idx: int) -> None:
+    """Standby seeded with 1k DUSK (AWAITING_N → SEEDED)."""
+    msg = (
+        f"🌱 <b>SOZU — Heal Progress</b>\n\n"
+        f"Standby prov{standby_idx} has been seeded. Maturing over "
+        f"the next epoch.\n\n"
+        f"Heal will run the full harvest (liquidate prov{prov_idx}, "
+        f"fund new master) at the next rotation window."
+    )
+    send_async(msg, alert_key="heal_seeded")
+
+
+def alert_heal_deferred(
+        standby_idx: int,
+        deferral_count: int,
+        max_deferrals: int,
+) -> None:
+    """Harvest deferred because we're the substrate unstake target."""
+    msg = (
+        f"⏸️ <b>SOZU — Heal Deferred</b>\n\n"
+        f"We are the substrate unstake target this epoch. Harvest "
+        f"postponed to avoid liquidating while unstakes are hitting us.\n\n"
+        f"<b>Deferrals:</b> {deferral_count}/{max_deferrals}\n\n"
+        f"Heal will force-run after {max_deferrals} deferrals if we remain "
+        f"the target."
+    )
+    send_async(msg, alert_key=f"heal_deferred_{deferral_count}")
+
+
+def alert_heal_force_run(deferral_count: int) -> None:
+    """Force-running harvest after max_deferrals cap hit."""
+    msg = (
+        f"⚡ <b>SOZU — Heal Force-Running</b>\n\n"
+        f"Deferred {deferral_count}× — force-running harvest now to avoid "
+        f"infinite deferral. Some unstakes may hit mid-harvest."
+    )
+    send_async(msg, alert_key="heal_force_run")
+
+
+def alert_heal_harvest_complete(
+        old_master_idx: int,
+        new_master_idx: int,
+        new_master_stake_dusk: float,
+) -> None:
+    """Harvest complete (COMPLETING state). Role swap happens at next epoch boundary."""
+    msg = (
+        f"✅ <b>SOZU — Heal Harvest Complete</b>\n\n"
+        f"Harvest finished. Role swap will take effect at the next epoch boundary.\n\n"
+        f"<b>Old master:</b> prov{old_master_idx}\n"
+        f"<b>New master:</b> prov{new_master_idx} with "
+        f"{new_master_stake_dusk:,.0f} DUSK"
+    )
+    send_async(msg, alert_key="heal_harvest_complete")
+
+
+def alert_heal_complete(new_master_idx: int, new_master_stake_dusk: float) -> None:
+    """Role swap done, heal returned to IDLE."""
+    msg = (
+        f"🎯 <b>SOZU — Heal Complete</b>\n\n"
+        f"Master role swapped to prov{new_master_idx} "
+        f"({new_master_stake_dusk:,.0f} DUSK). Heal idle."
+    )
+    send_async(msg, alert_key="heal_complete")
+
+
+def alert_heal_failed(reason: str) -> None:
+    """Heal step failed — state is FAILED, will retry on next threshold check."""
+    msg = (
+        f"🔴 <b>SOZU — Heal Failed</b>\n\n"
+        f"Heal step failed: {reason}\n\n"
+        f"Heal will retry when the master threshold is next crossed."
+    )
+    send_async(msg, alert_key="heal_failed")
 
 
 def alert_rotation_failed(reason: str) -> None:

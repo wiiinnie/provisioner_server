@@ -135,6 +135,11 @@ _CONFIG_DEFAULTS = {
     "snatch_window":           11,
     "backfill_blocks":         200,
     "master_idx":              -1,
+    "master_heal_enabled":         True,  # master-heal auto-trigger enabled
+    "master_alert_threshold_pct":  70.0,  # TG alert at X% of target_master
+    "master_heal_threshold_pct":   50.0,  # heal triggers at X% of target_master
+    "rotation_floor_pct":          20.0,  # rot_active target = max_cap × X %
+    "max_harvest_deferrals":       3,  # defers when unstake-target; force-run at cap
     "master_threshold_pct":    15.0,   # alert when prov0 stake < X% of active_maximum
     "telegram_bot_token":      "",
     "telegram_chat_id":        "",

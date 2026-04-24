@@ -1501,9 +1501,7 @@ function renderAllProvCards() {
         ? `<span style="color:var(--cyan);font-size:8px;letter-spacing:.05em;margin-left:4px;">★ MASTER</span>`
         : ''
       const rotChip = _rotRoleChip(i)
-      hdr.innerHTML = `Provisioner ${i}${masterLabel}${rotChip}` +
-        `<label title="Set as master" style="margin-left:auto;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:10px;color:var(--dim);font-weight:400;letter-spacing:.04em;">` +
-        `<input type="checkbox" name="master-check" value="${i}" ${isMaster ? 'checked' : ''} onchange="setMasterIdx(${i})" style="accent-color:var(--cyan);cursor:pointer;"> master</label>`
+      hdr.innerHTML = `Provisioner ${i}${masterLabel}${rotChip}`
     }
     const provAddr = _cfg ? (_cfg[`prov_${i}_address`] || '') : ''
     const si = provAddr && _stakeInfoByAddr[provAddr]
@@ -1533,11 +1531,8 @@ function updateLivePanel(data) {
       const masterLabel = isMaster
         ? `<span style="color:var(--cyan);font-size:8px;letter-spacing:.05em;margin-left:4px;">★ MASTER</span>`
         : ''
-      const radioChecked = isMaster ? 'checked' : ''
       const rotChip = _rotRoleChip(idx)
-      hdr.innerHTML = `Provisioner ${idx}${masterLabel}${rotChip}` +
-        `<label title="Set as master" style="margin-left:auto;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:10px;color:var(--dim);font-weight:400;letter-spacing:.04em;">` +
-        `<input type="checkbox" name="master-check" value="${idx}" ${radioChecked} onchange="setMasterIdx(${idx})" style="accent-color:var(--cyan);cursor:pointer;"> master</label>`
+      hdr.innerHTML = `Provisioner ${idx}${masterLabel}${rotChip}`
     }
   }
   for (const i of _NODE_INDICES) {
@@ -1552,46 +1547,6 @@ function updateLivePanel(data) {
                    document.getElementById(`node${i}-body`),
                    _lastSyncInfo[i] || null,
                    si)
-  }
-}
-
-async function setMasterIdx(idx) {
-  if (!confirm(`Set Provisioner ${idx} as master? This updates the server config and takes effect on the next rotation tick.`)) {
-    // Revert checkboxes to current master value
-    const cur = (_cfg && _cfg.master_idx !== undefined) ? parseInt(_cfg.master_idx) : -1
-    document.querySelectorAll('input[name="master-check"]').forEach(cb => {
-      cb.checked = parseInt(cb.value) === cur
-    })
-    return
-  }
-  const pw = getPassword()
-  try {
-    const resp = await fetch(`${API}/api/config`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ master_idx: idx, password: pw })
-    })
-    const data = await resp.json()
-    if (data.ok) {
-      if (_cfg) _cfg.master_idx = idx
-      // Sync config panel input if open
-      const cfgInput = document.getElementById('cfg-master-idx')
-      if (cfgInput) cfgInput.value = idx
-      // Re-render cards so ★ MASTER label moves immediately
-      renderAllProvCards()
-      // Brief visual confirmation on the checkbox label
-      const lbl = document.querySelector(`input[name="master-check"][value="${idx}"]`)?.parentElement
-      if (lbl) { lbl.style.color = 'var(--cyan)'; setTimeout(() => lbl.style.color = '', 1500) }
-    } else {
-      alert('Failed to update master index: ' + (data.stderr || data.error || 'unknown error'))
-      // Revert checkboxes
-      const cur = (_cfg && _cfg.master_idx !== undefined) ? parseInt(_cfg.master_idx) : -1
-      document.querySelectorAll('input[name="master-check"]').forEach(cb => {
-        cb.checked = parseInt(cb.value) === cur
-      })
-    }
-  } catch(e) {
-    alert('Error setting master: ' + e.message)
   }
 }
 
@@ -1766,7 +1721,18 @@ async function loadConfig() {
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11
     document.getElementById('cfg-backfill').value       = _cfg.backfill_blocks ?? 200
-    document.getElementById('cfg-master-threshold-pct').value = _cfg.master_threshold_pct ?? 15
+    // ── Master Heal config ──
+    // Migration: if old master_threshold_pct exists and the new keys don't, use it
+    // as a sane default for master_heal_threshold_pct (alert gets +20 pts).
+    const _oldMthr = _cfg.master_threshold_pct
+    const _healThr = _cfg.master_heal_threshold_pct ?? (_oldMthr != null ? _oldMthr : 50)
+    const _alertThr = _cfg.master_alert_threshold_pct ?? (_oldMthr != null ? Math.min(_oldMthr + 20, 90) : 70)
+    const _healEnabled = _cfg.master_heal_enabled
+    document.getElementById('cfg-master-heal-enabled').checked = (_healEnabled !== false)   // default true
+    document.getElementById('cfg-master-alert-threshold-pct').value = _alertThr
+    document.getElementById('cfg-master-heal-threshold-pct').value  = _healThr
+    document.getElementById('cfg-rotation-floor-pct').value         = _cfg.rotation_floor_pct ?? 20
+    document.getElementById('cfg-max-harvest-deferrals').value      = _cfg.max_harvest_deferrals ?? 3
     document.getElementById('cfg-telegram-token').value  = _cfg.telegram_bot_token || ''
     document.getElementById('cfg-telegram-chatid').value = _cfg.telegram_chat_id || ''
     document.getElementById('cfg-min-deposit').value   = _cfg.min_deposit_dusk ?? 100
@@ -1777,7 +1743,6 @@ async function loadConfig() {
     const swEl = document.getElementById('cfg-sweeper-enabled')
     if (swEl) swEl.checked = !!_cfg.sweeper_enabled
     // Rotation config fields
-    document.getElementById('cfg-master-idx').value = _cfg.master_idx ?? -1
     document.getElementById('cfg-prov-0-address').value = _cfg.prov_0_address || ''
     document.getElementById('cfg-prov-1-address').value = _cfg.prov_1_address || ''
     document.getElementById('cfg-prov-2-address').value = _cfg.prov_2_address || ''
@@ -1794,6 +1759,14 @@ async function loadConfig() {
 }
 
 async function saveConfig() {
+  // Validate: alert threshold must be >= heal threshold
+  const _alertPct = parseFloat(document.getElementById('cfg-master-alert-threshold-pct').value || '70')
+  const _healPct  = parseFloat(document.getElementById('cfg-master-heal-threshold-pct').value || '50')
+  if (_alertPct < _healPct) {
+    alert(`Alert threshold (${_alertPct}%) must be ≥ heal threshold (${_healPct}%).\n\n` +
+          `The alert should fire BEFORE heal triggers, so a higher percentage means earlier warning.`)
+    return
+  }
   const payload = {
     network_id:           parseInt(document.getElementById('cfg-network-id').value),
     contract_address:     document.getElementById('cfg-contract').value.trim(),
@@ -1813,7 +1786,11 @@ async function saveConfig() {
     prov_1_address:        document.getElementById('cfg-prov-1-address').value.trim(),
     prov_2_address:        document.getElementById('cfg-prov-2-address').value.trim(),
     prov_3_address:        document.getElementById('cfg-prov-3-address').value.trim(),
-    master_threshold_pct: parseFloat(document.getElementById('cfg-master-threshold-pct').value || '15'),
+    master_heal_enabled:      !!(document.getElementById('cfg-master-heal-enabled')?.checked),
+    master_alert_threshold_pct: parseFloat(document.getElementById('cfg-master-alert-threshold-pct').value || '70'),
+    master_heal_threshold_pct:  parseFloat(document.getElementById('cfg-master-heal-threshold-pct').value || '50'),
+    rotation_floor_pct:       parseFloat(document.getElementById('cfg-rotation-floor-pct').value || '20'),
+    max_harvest_deferrals:    parseInt(document.getElementById('cfg-max-harvest-deferrals').value || '3'),
     telegram_chat_id:     document.getElementById('cfg-telegram-chatid').value.trim(),
     min_deposit_dusk:     parseFloat(document.getElementById('cfg-min-deposit').value || '100'),
     snatch_min_deposit_dusk: parseFloat(document.getElementById('cfg-snatch-min-deposit')?.value || '100'),
@@ -1821,7 +1798,6 @@ async function saveConfig() {
     gas_price:            parseInt(document.getElementById('cfg-gas-price').value || '1'),
     sweeper_enabled:      !!(document.getElementById('cfg-sweeper-enabled')?.checked),
     telegram_bot_token:   document.getElementById('cfg-telegram-token').value.trim(),
-    master_idx:           parseInt(document.getElementById('cfg-master-idx')?.value ?? '-1'),
   }
   try {
 
@@ -3282,10 +3258,25 @@ setInterval(() => {
 
 
 
-      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Master Node</label>
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Master Heal</label>
 
-      <label style="font-size:11px;color:var(--muted);">Master Threshold (%)<br><span style="font-size:10px;color:var(--dim)">alert when master stake drops below X% of max capacity (default 15)</span></label>
-      <input class="modal-input" id="cfg-master-threshold-pct" type="number" step="1" min="1" max="95" style="margin:0;" placeholder="15">
+      <label style="font-size:11px;color:var(--muted);">Heal Enabled<br><span style="font-size:10px;color:var(--dim)">auto-trigger master replacement via standby when stake drops below heal threshold</span></label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-master-heal-enabled" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);">enable heal automation</span>
+      </div>
+
+      <label style="font-size:11px;color:var(--muted);">Alert Threshold (%)<br><span style="font-size:10px;color:var(--dim)">TG alert fires when master stake drops below X% of target_master (default 70)</span></label>
+      <input class="modal-input" id="cfg-master-alert-threshold-pct" type="number" step="1" min="1" max="100" style="margin:0;" placeholder="70">
+
+      <label style="font-size:11px;color:var(--muted);">Heal Threshold (%)<br><span style="font-size:10px;color:var(--dim)">heal triggers when master stake drops below X% of target_master (default 50) — must be &lt; alert threshold</span></label>
+      <input class="modal-input" id="cfg-master-heal-threshold-pct" type="number" step="1" min="1" max="100" style="margin:0;" placeholder="50">
+
+      <label style="font-size:11px;color:var(--muted);">Rotation Floor (%)<br><span style="font-size:10px;color:var(--dim)">rot_active reserved stake = max_capacity × X% (default 20). target_master = 100% − this.</span></label>
+      <input class="modal-input" id="cfg-rotation-floor-pct" type="number" step="1" min="1" max="50" style="margin:0;" placeholder="20">
+
+      <label style="font-size:11px;color:var(--muted);">Max Harvest Deferrals<br><span style="font-size:10px;color:var(--dim)">consecutive harvest defers allowed when we are substrate unstake-target; force-run at this cap (default 3)</span></label>
+      <input class="modal-input" id="cfg-max-harvest-deferrals" type="number" step="1" min="0" max="20" style="margin:0;" placeholder="3">
 
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Telegram Alerts</label>
 
@@ -3303,9 +3294,6 @@ setInterval(() => {
 
       <label style="font-size:11px;color:var(--muted);">Snatch Min Deposit (DUSK)<br><span style="font-size:10px;color:var(--dim)">lower threshold active only during snatch window (≤11 blk to epoch end) — set below regular to capture smaller last-minute deposits</span></label>
       <input class="modal-input" id="cfg-snatch-min-deposit" type="number" step="10" min="0" style="margin:0;" placeholder="100">
-
-      <label style="font-size:11px;color:var(--muted);">Master Node Index<br><span style="font-size:10px;color:var(--dim)">provisioner index that holds master stake; -1 = auto-detect</span></label>
-      <input class="modal-input" id="cfg-master-idx" type="number" step="1" min="-1" style="margin:0;" placeholder="-1">
 
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Transaction</label>
 

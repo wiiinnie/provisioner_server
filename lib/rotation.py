@@ -366,6 +366,14 @@ def _detect_and_log_state() -> None:
 def on_block(block_height: int) -> None:
     global _sweep_delta
     _log(f"[rotation] on_block called height={block_height}")
+
+    # ── HEAL hook: per-block heal tick (role swap on epoch boundary) ──────────
+    try:
+        from .heal import tick_heal
+        tick_heal(block_height)
+    except Exception as _heal_err:
+        _log(f"[rotation] heal tick error: {_heal_err}")
+
     with _state_lock:
         enabled = _rotation_state["enabled"]
         state   = _rotation_state["state"]
@@ -543,26 +551,50 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
             from .assess import _fetch_capacity_cached as _fcc
             master_idx = _master_idx()
             if master_idx >= 0:
-                threshold_pct = float(cfg("master_threshold_pct") or 15.0)
-                master_node   = nodes.get(master_idx, {})
-                master_stake  = master_node.get("stake_dusk", 0.0)
+                # v2 heal: two-threshold model (alert + heal), both applied to
+                # target_master. Backward-compat: fall back to old master_threshold_pct.
                 cap           = _fcc(_pw())
                 active_max    = cap.get("active_maximum", 0.0)
-                threshold_dusk = active_max * threshold_pct / 100.0
-                # Compare in LUX to avoid float issues
-                master_lux    = round(master_stake    * 1e9)
-                threshold_lux = round(threshold_dusk  * 1e9)
-                if master_lux < threshold_lux:
+                rot_floor_pct = float(cfg("rotation_floor_pct") or 20.0)
+                rotation_floor = active_max * rot_floor_pct / 100.0
+                target_master = max(0.0, active_max - rotation_floor)
+
+                alert_pct = float(cfg("master_alert_threshold_pct")
+                                  or cfg("master_threshold_pct")
+                                  or 70.0)
+                heal_pct  = float(cfg("master_heal_threshold_pct")
+                                  or cfg("master_threshold_pct")
+                                  or 50.0)
+
+                master_node   = nodes.get(master_idx, {})
+                master_stake  = master_node.get("stake_dusk", 0.0)
+
+                alert_dusk = target_master * alert_pct / 100.0
+                heal_dusk  = target_master * heal_pct  / 100.0
+
+                master_lux = round(master_stake * 1e9)
+                alert_lux  = round(alert_dusk   * 1e9)
+
+                if master_lux < alert_lux:
                     _rlog_warn(f"master prov[{master_idx}] stake {master_stake:,.2f} DUSK "
-                               f"< threshold {threshold_dusk:,.2f} DUSK "
-                               f"({threshold_pct:.0f}% of {active_max:,.0f}) — sending alert")
+                               f"< alert threshold {alert_dusk:,.2f} DUSK "
+                               f"({alert_pct:.0f}% of target_master={target_master:,.0f}) — "
+                               f"sending alert")
                     try:
                         from .telegram import alert_master_below_threshold
                         alert_master_below_threshold(
-                            master_idx, master_stake, threshold_dusk,
-                            threshold_pct, active_max)
+                            master_idx, master_stake, alert_dusk,
+                            alert_pct, target_master)
                     except Exception as _tg_err:
                         _rlog_warn(f"telegram alert error: {_tg_err}")
+                    # ── HEAL hook: notify heal; heal uses its own (lower) threshold ──
+                    try:
+                        from .heal import check_threshold_and_trigger
+                        from .pool import _fast_alloc_pool
+                        check_threshold_and_trigger(
+                            master_idx, master_stake, active_max, _fast_alloc_pool())
+                    except Exception as _heal_err:
+                        _rlog_warn(f"heal trigger error: {_heal_err}")
                 else:
                     # Condition resolved — reset cooldown so next crossing alerts again
                     try:
@@ -1091,6 +1123,18 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
 def _run_rotation(cur_epoch: int) -> None:
     _set_state(IN_PROGRESS)
     try:
+        # ── HEAL hook: in epoch N+1, heal takes the rotation window ─────
+        try:
+            from .heal import should_run_harvest, run_harvest
+            if should_run_harvest(cur_epoch):
+                _rlog_step(f"heal: running HARVEST in place of regular rotation")
+                run_harvest(cur_epoch)
+                _set_state(ROTATING)
+                _bump_epoch(cur_epoch)
+                return
+        except Exception as _heal_err:
+            _rlog_warn(f"heal harvest hook error: {_heal_err}")
+
         from .wallet import WALLET_PATH
         from .rues import register_tx_confirm, get_tx_confirm_result
 
@@ -1203,12 +1247,23 @@ def _run_rotation(cur_epoch: int) -> None:
         # No capacity cap here — rotation recycles existing stake, not new external DUSK.
         # active_current after liquidation = active_current before - (stake + locked),
         # and we re-allocate exactly that amount back. Net capacity change = zero.
-        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK)
+        # ── HEAL hook: if heal is awaiting its epoch-N standby seed, reserve an
+        # extra SEED_DUSK so the heal hook at end of rotation has something to fire.
+        heal_reserve = 0.0
+        try:
+            from .heal import wants_epoch_n_seed
+            if wants_epoch_n_seed():
+                heal_reserve = SEED_DUSK
+        except Exception:
+            pass
+        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK - heal_reserve)
         _rlog_step(f"[3/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
         _rlog_info(
             f"[3/4] liquidate freed {freed_by_liquidate:.4f} DUSK + "
             f"terminate freed {freed_by_terminate:.4f} DUSK - "
-            f"seed {SEED_DUSK:.0f} DUSK = {alloc_dusk:.4f} DUSK to allocate")
+            f"seed {SEED_DUSK:.0f} DUSK"
+            + (f" - heal_reserve {heal_reserve:.0f} DUSK" if heal_reserve > 0 else "")
+            + f" = {alloc_dusk:.4f} DUSK to allocate")
 
         if alloc_dusk < 10.0:
             _rlog_warn(f"[3/4] only {alloc_dusk:.2f} DUSK to allocate — nothing sent to rot_slave")
@@ -1256,6 +1311,18 @@ def _run_rotation(cur_epoch: int) -> None:
                 _rlog_info("[4/4] state check will retry seeding from pool on next tick")
                 _set_state(ROTATING); _bump_epoch(cur_epoch); return
             _rlog_ok(f"[4/4] prov[{rot_active_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
+
+        # ── HEAL hook: in epoch N, append one extra seed for standby master ──
+        # After rotation's step 4 confirms, if heal is awaiting the epoch-N seed,
+        # fire stake_activate on standby (perform_epoch_n_seed handles its own
+        # block-gap wait).
+        try:
+            from .heal import wants_epoch_n_seed, perform_epoch_n_seed
+            if wants_epoch_n_seed():
+                _rlog_step("heal: appending epoch-N seed of standby after rotation")
+                perform_epoch_n_seed(cur_epoch)
+        except Exception as _heal_err:
+            _rlog_warn(f"heal epoch-N seed hook error: {_heal_err}")
 
         _rlog_ok(f"─── rotation epoch {cur_epoch} complete ✓ ───")
         _rlog_info(f"next state: prov[{rot_slave_idx}] → active next epoch | "

@@ -67,6 +67,35 @@ def _signal_tx_confirms(fn_name: str, decoded: dict, prov_addr: str = "") -> Non
                 entry["event"].set()
                 break
 
+
+# ── Block-reached registry ────────────────────────────────────────────────────
+# Used by heal harvest to wait N blocks between sequential txs (e.g. liquidate →
+# terminate needs a 2-block gap). Heal registers an Event keyed on target block;
+# _signal_block_reached fires any events whose target is <= incoming block.
+_block_waiters:      dict = {}           # {target_block: threading.Event}
+_block_waiters_lock       = threading.Lock()
+
+
+def wait_for_block(target_block: int, timeout: int = 120) -> bool:
+    """Block until block_accepted height >= target_block. Returns True if reached
+    in time, False on timeout. Used for enforcing inter-tx block gaps."""
+    evt = threading.Event()
+    with _block_waiters_lock:
+        _block_waiters.setdefault(target_block, []).append(evt)
+    return evt.wait(timeout=timeout)
+
+
+def _signal_block_reached(block_height: int) -> None:
+    """Called from the block_accepted handler. Fires any registered Events
+    whose target block is <= the new block height."""
+    with _block_waiters_lock:
+        to_fire = [(t, evts) for t, evts in _block_waiters.items() if t <= block_height]
+        for target, evts in to_fire:
+            for e in evts:
+                e.set()
+            del _block_waiters[target]
+
+
 # All subscribable topics: key -> URL path template (CONTRACT_ID substituted at runtime)
 # Paths match Dusk RUES API exactly as documented.
 TOPIC_PATHS = {
@@ -357,6 +386,11 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
 
     # Fire rotation engine on every confirmed block
     if topic == "block_accepted" and height:
+        # Fire any block-waiter Events whose target has been reached
+        try:
+            _signal_block_reached(height)
+        except Exception as _bw_err:
+            _log(f"[rues] block_reached signal error: {_bw_err}")
         try:
             from .rotation import on_block
             on_block(height)
