@@ -41,6 +41,11 @@ fi
 [[ -n "${SOZU_DASHBOARD_USER:-}" ]] || die "Set SOZU_DASHBOARD_USER before running this script"
 [[ -n "${SOZU_DASHBOARD_PASS:-}" ]] || die "Set SOZU_DASHBOARD_PASS before running this script"
 
+# SOZU_NETWORK: testnet | mainnet (default testnet for back-compat)
+: "${SOZU_NETWORK:=testnet}"
+[[ "$SOZU_NETWORK" == "testnet" || "$SOZU_NETWORK" == "mainnet" ]] \
+    || die "SOZU_NETWORK must be testnet or mainnet (got: $SOZU_NETWORK)"
+
 # ── Verify server file exists ─────────────────────────────────────────────────
 SERVER_PY="$SERVER_DIR/provisioner_server.py"
 [[ -f "$SERVER_PY" ]] || die "provisioner_server.py not found in $SERVER_DIR — pull the repo first"
@@ -124,6 +129,7 @@ User=root
 WorkingDirectory=$SERVER_DIR
 Environment="SOZU_DASHBOARD_USER=${SOZU_DASHBOARD_USER}"
 Environment="SOZU_DASHBOARD_PASS=${SOZU_DASHBOARD_PASS}"
+Environment="SOZU_NETWORK=${SOZU_NETWORK}"
 ExecStart=$(which gunicorn) \\
   --workers 1 \\
   --threads 8 \\
@@ -163,6 +169,7 @@ echo ""
 echo -e "  URL:      ${CYN}${ACCESS_URL}${NC}"
 echo -e "  User:     ${SOZU_DASHBOARD_USER}"
 echo -e "  Password: (as set in SOZU_DASHBOARD_PASS)"
+echo -e "  Network:  ${SOZU_NETWORK}"
 echo ""
 echo "  Service management:"
 echo "    systemctl status sozu-dashboard"
