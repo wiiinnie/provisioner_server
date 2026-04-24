@@ -36,7 +36,7 @@ def stake_info_all():
     op = OPERATOR_ADDRESS()
     if not op:
         return jsonify({"ok": False, "stderr": "operator_address not configured"}), 400
-    r = operator_cmd(f"{_NET} stake-info --operator {op} --format json",
+    r = operator_cmd(f"stake-info --operator {op} --format json",
                      timeout=30, password=pw)
     stdout = r.get("stdout", "") or ""
     stderr = r.get("stderr", "") or ""
@@ -213,7 +213,7 @@ def track_transaction():
 @bp.route("/api/provisioner/query_operator_rewards", methods=["POST"])
 def query_operator_rewards():
     pw      = (request.get_json() or {}).get("password", "")
-    r       = operator_cmd(f"{_NET} pool balance-of --format json", timeout=30, password=pw)
+    r       = operator_cmd(f"pool balance-of --format json", timeout=30, password=pw)
     raw_out = (r.get("stdout") or r.get("stderr") or "").strip()
     balance_lux, balance_dusk, account = 0, 0.0, ""
     try:
@@ -235,7 +235,7 @@ def query_operator_rewards():
 @bp.route("/api/provisioner/withdraw_rewards", methods=["POST"])
 def provisioner_withdraw_rewards():
     pw  = (request.get_json() or {}).get("password", "")
-    r1  = operator_cmd(f"{_NET} pool balance-of --format json", timeout=30, password=pw)
+    r1  = operator_cmd(f"pool balance-of --format json", timeout=30, password=pw)
     raw = (r1.get("stdout") or r1.get("stderr") or "").strip()
     try:
         obj          = json.loads(raw)
@@ -250,7 +250,7 @@ def provisioner_withdraw_rewards():
         return jsonify({"ok": True, "step": "nothing_to_withdraw", "balance_lux": 0,
                         "balance_dusk": 0.0,
                         "stdout": "Operator rewards balance is 0 — nothing to withdraw"})
-    r2 = operator_cmd(f"{_NET} pool sozu-unstake --amount {balance_lux} --format json",
+    r2 = operator_cmd(f"pool sozu-unstake --amount {balance_lux} --format json",
                       timeout=60, password=pw)
     stdout_msg = (f"Balance: {balance_dusk:.6f} DUSK ({balance_lux} LUX)\n"
                   f"Withdrawing: {balance_lux} LUX\n"
@@ -269,7 +269,7 @@ def provisioner_withdraw_rewards():
 @bp.route("/api/sozu/recycle", methods=["POST"])
 def sozu_recycle():
     pw = (request.get_json() or {}).get("password", "")
-    r  = operator_cmd(f"{_NET} pool recycle --format json",
+    r  = operator_cmd(f"pool recycle --format json",
                       timeout=60, password=pw, gas_limit=GAS_LIMIT())
     return jsonify({"ok": r["ok"], "stdout": r.get("stdout", ""),
                     "stderr": r.get("stderr", ""), "duration_ms": r.get("duration_ms", 0)})

@@ -366,7 +366,7 @@ def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None
         }
 
     result = operator_cmd(
-        f"{_NET} pool stake-activate --skip-confirmation "
+        f"pool stake-activate --skip-confirmation "
         f"--amount {amount_lux} "
         f"--provisioner {addr} "
         f"--provisioner-wallet {WALLET_PATH} "

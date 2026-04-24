@@ -20,7 +20,7 @@ def substrate_capacity():
     if not op:
         return jsonify({"ok": False, "stderr": "operator_address not configured"}), 400
 
-    r = operator_cmd(f"{_NET} substrate capacity --operator {op} --format json",
+    r = operator_cmd(f"substrate capacity --operator {op} --format json",
                      timeout=30, password=pw)
     stdout = r.get("stdout", "") or ""
     stderr = r.get("stderr", "") or ""
@@ -38,7 +38,7 @@ def substrate_capacity():
 @bp.route("/api/substrate/operators", methods=["GET", "POST"])
 def substrate_operators():
     """List all registered operators from substrate."""
-    r = operator_cmd(f"{_NET} substrate operators --format json",
+    r = operator_cmd(f"substrate operators --format json",
                      timeout=30, password=get_password())
     stdout = r.get("stdout", "") or ""
     stderr = r.get("stderr", "") or ""
@@ -59,7 +59,7 @@ def substrate_fee():
     op = OPERATOR_ADDRESS()
     if not op:
         return jsonify({"ok": False, "stderr": "operator_address not configured"}), 400
-    r = operator_cmd(f"{_NET} substrate fee --operator {op}",
+    r = operator_cmd(f"substrate fee --operator {op}",
                      timeout=30, password=get_password())
     return jsonify({"ok": r["ok"],
                     "stdout": r.get("stdout", "") or "",
@@ -70,7 +70,7 @@ def substrate_fee():
 @bp.route("/api/substrate/active_stake", methods=["GET", "POST"])
 def substrate_active_stake():
     """Query combined operator active stake."""
-    r = wallet_cmd(f"{_NET} substrate active-stake --format json",
+    r = wallet_cmd(f"substrate active-stake --format json",
                    timeout=30, password=get_password())
     stdout = r.get("stdout", "") or ""
     stderr = r.get("stderr", "") or ""

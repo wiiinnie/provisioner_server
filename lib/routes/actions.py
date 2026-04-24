@@ -92,7 +92,7 @@ def provisioner_add_provisioner():
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
     r = operator_cmd(
-        f"{_NET} pool add-provisioner --skip-confirmation "
+        f"pool add-provisioner --skip-confirmation "
         f"--operator {OPERATOR_ADDRESS()} --provisioner {prov}",
         timeout=90, password=pw)
     return jsonify({"ok": r["ok"], **r})
@@ -161,7 +161,7 @@ def provisioner_allocate_stake():
                                   f"Set prov_{idx}_address in config."}), 400
 
     r = operator_cmd(
-        f"{_NET} pool stake-activate --skip-confirmation "
+        f"pool stake-activate --skip-confirmation "
         f"--amount {amount_lux} "
         f"--provisioner {prov_addr} "
         f"--provisioner-wallet {WALLET_PATH} "
@@ -177,7 +177,7 @@ def provisioner_deactivate_stake():
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
-    r = operator_cmd(f"{_NET} pool stake-deactivate --skip-confirmation --provisioner {prov}",
+    r = operator_cmd(f"pool stake-deactivate --skip-confirmation --provisioner {prov}",
                      timeout=90, password=pw)
     return jsonify({"ok": r["ok"], **r})
 
@@ -190,7 +190,7 @@ def provisioner_liquidate():
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
-    r = operator_cmd(f"{_NET} pool liquidate --skip-confirmation --provisioner {prov}",
+    r = operator_cmd(f"pool liquidate --skip-confirmation --provisioner {prov}",
                      timeout=90, password=pw)
     return jsonify({"ok": r["ok"], "step": "complete", "results": {"liquidate": r}})
 
@@ -202,7 +202,7 @@ def provisioner_terminate():
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
-    r = operator_cmd(f"{_NET} pool terminate --skip-confirmation --provisioner {prov}",
+    r = operator_cmd(f"pool terminate --skip-confirmation --provisioner {prov}",
                      timeout=90, password=pw)
     return jsonify({"ok": r["ok"], "step": "complete", "results": {"terminate": r}})
 
@@ -237,26 +237,26 @@ def provisioner_remove_provisioner():
                 _tip_snap = int(_jm.loads(_rr.read()).get("block", {}).get("header", {}).get("height", 0))
         except Exception:
             pass
-        r1 = operator_cmd(f"{_NET} pool liquidate --skip-confirmation --provisioner {prov}", timeout=90, password=pw)
+        r1 = operator_cmd(f"pool liquidate --skip-confirmation --provisioner {prov}", timeout=90, password=pw)
         results["liquidate"] = r1
         if not r1["ok"]:
             return jsonify({"ok": False, "step": "liquidate", "results": results})
         _wait_next_block(_tip_snap, timeout_s=60)
-        r2 = operator_cmd(f"{_NET} pool terminate --skip-confirmation --provisioner {prov}", timeout=90, password=pw)
+        r2 = operator_cmd(f"pool terminate --skip-confirmation --provisioner {prov}", timeout=90, password=pw)
         results["terminate"] = r2
         if not r2["ok"]:
             return jsonify({"ok": False, "step": "terminate", "results": results})
         time.sleep(5)
 
     elif has_stake and status in ("maturing", "seeded", "inactive"):
-        r1 = operator_cmd(f"{_NET} pool stake-deactivate --skip-confirmation --provisioner {prov}", timeout=90, password=pw)
+        r1 = operator_cmd(f"pool stake-deactivate --skip-confirmation --provisioner {prov}", timeout=90, password=pw)
         results["deactivate"] = r1
         if not r1["ok"]:
             return jsonify({"ok": False, "step": "deactivate", "results": results})
         time.sleep(8)
 
     r5 = operator_cmd(
-        f"{_NET} pool remove-provisioner --skip-confirmation --provisioner {prov}",
+        f"pool remove-provisioner --skip-confirmation --provisioner {prov}",
         timeout=90, password=pw)
     results["remove"] = r5
     return jsonify({"ok": r5["ok"], "step": "complete",

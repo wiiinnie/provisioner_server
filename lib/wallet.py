@@ -101,10 +101,10 @@ def wallet_cmd(subcmd: str, timeout: int = 30, password: str = "", gas_limit: in
     gl_flag      = f" --gas-limit {effective_gl}"
     if password:
         safe_pw = password.replace("'", "'\\''")
-        inner   = f"{WALLET_BIN} --password '{safe_pw}'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
-        log_cmd = f"{WALLET_BIN} --password '***'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
+        inner   = f"{WALLET_BIN} {_NET} --password '{safe_pw}'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
+        log_cmd = f"{WALLET_BIN} {_NET} --password '***'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
     else:
-        inner   = f"{WALLET_BIN}{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
+        inner   = f"{WALLET_BIN} {_NET}{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
         log_cmd = inner
     with _wallet_lock:
         result = run_cmd(inner, timeout=timeout)
@@ -151,10 +151,10 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
     gl_flag      = f" --gas-limit {effective_gl}"
     if password:
         safe_pw = password.replace("'", "'\\''")
-        cmd     = f"{WALLET_BIN} --password '{safe_pw}'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
-        log_cmd = f"{WALLET_BIN} --password '***'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
+        cmd     = f"{WALLET_BIN} {_NET} --password '{safe_pw}'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
+        log_cmd = f"{WALLET_BIN} {_NET} --password '***'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
     else:
-        cmd     = f"{WALLET_BIN}{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
+        cmd     = f"{WALLET_BIN} {_NET}{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
         log_cmd = cmd
 
     _stripped = subcmd.strip()

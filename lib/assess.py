@@ -248,7 +248,7 @@ def _assess_state(tip: int, pw: str) -> dict:
     op = OPERATOR_ADDRESS()
     nodes_by_idx = {}
 
-    r = operator_cmd(f"{_NET} stake-info --operator {op} --format json",
+    r = operator_cmd(f"stake-info --operator {op} --format json",
                      timeout=30, password=pw)
     raw = (r.get("stdout") or r.get("stderr") or "").strip()
     si_list = []
@@ -363,7 +363,7 @@ def _assess_state(tip: int, pw: str) -> dict:
 def _fetch_capacity(pw: str) -> dict:
     """Fetch operator capacity from substrate. Returns DUSK values."""
     op  = OPERATOR_ADDRESS()
-    r   = operator_cmd(f"{_NET} substrate capacity --operator {op} --format json",
+    r   = operator_cmd(f"substrate capacity --operator {op} --format json",
                        timeout=30, password=pw)
     raw = (r.get("stdout") or r.get("stderr") or "").strip()
     cap = {}

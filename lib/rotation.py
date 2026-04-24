@@ -314,7 +314,7 @@ def _pool_dusk() -> float:
 def _cmd(cmd_str: str, timeout: int = 90) -> dict:
     from .wallet import operator_cmd
     from .config import _NET
-    return operator_cmd(f"{_NET} {cmd_str}", timeout=timeout, password=_pw())
+    return operator_cmd(f"{cmd_str}", timeout=timeout, password=_pw())
 
 
 def _assess() -> dict:

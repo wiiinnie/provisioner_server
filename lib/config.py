@@ -41,7 +41,7 @@ def configure_werkzeug_logger():
 WALLET_BIN      = "sozu-wallet"
 WALLET_PATH     = os.path.expanduser("~/sozu_provisioner")
 OPERATOR_WALLET = os.path.expanduser("~/sozu_operator")
-NETWORK         = "testnet"   # change to "mainnet" to go live
+NETWORK         = os.environ.get("SOZU_NETWORK", "testnet")   # override via SOZU_NETWORK env var
 _NET            = f"-n {NETWORK}"
 RUSK_VERSION    = "1.5"
 NODE_INDICES    = [0, 1, 2, 3]
