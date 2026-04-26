@@ -26,12 +26,43 @@ _rotation_lock = threading.Lock()
 # ── Password cache ─────────────────────────────────────────────────────────────
 _cached_wallet_pw: str = ""
 
+def _load_password_from_systemd_credential() -> str:
+    """
+    Read the wallet password from systemd's runtime credential directory if
+    present. The encrypted credential is provisioned via the unit's
+    LoadCredentialEncrypted= directive; systemd decrypts it into a tmpfs path
+    pointed to by $CREDENTIALS_DIRECTORY at service start.
+
+    Returns "" if no credential is mounted (e.g. running outside systemd).
+    """
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if not cred_dir:
+        return ""
+    cred_file = os.path.join(cred_dir, "wallet_pw")
+    if not os.path.exists(cred_file):
+        return ""
+    try:
+        with open(cred_file) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
 def get_password() -> str:
     """
     Return the cached wallet password.
-    Inside a Flask request context also reads from JSON body / header and caches.
+
+    Resolution order:
+      1. In-memory cache (already populated for this process)
+      2. systemd credential at $CREDENTIALS_DIRECTORY/wallet_pw (headless mode)
+      3. Flask request body / X-Wallet-Password header (operator override)
     """
     global _cached_wallet_pw
+
+    # First call after process start: try the systemd credential.
+    if not _cached_wallet_pw:
+        _cached_wallet_pw = _load_password_from_systemd_credential()
+
     try:
         from flask import has_request_context, request
         if has_request_context():

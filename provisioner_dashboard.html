@@ -868,7 +868,7 @@
 </div>
 
 <!-- ── PASSWORD MODAL ── -->
-<div class="modal-overlay open" id="pw-modal">
+<div class="modal-overlay" id="pw-modal">
   <div class="modal" style="min-width:360px;">
     <div class="modal-title" style="color:var(--teal);">Wallet Password</div>
     <div class="modal-body">Enter your wallet password to authenticate commands.<br>It stays in memory only — never stored or logged.</div>
@@ -1134,8 +1134,32 @@ function _renderHistToggles() {
 }
 
 // ── PASSWORD ──────────────────────────────────────────────────────────────────
+let _backendHasPw = false   // populated on load by checkBackendPasswordStatus()
+
+async function checkBackendPasswordStatus() {
+  try {
+    const r = await fetch(`${API}/api/password/status`)
+    const d = await r.json()
+    _backendHasPw = !!d.set
+    if (_backendHasPw) {
+      const dot = document.getElementById('pw-indicator')
+      const lbl = document.getElementById('pw-nav-label')
+      const btn = document.getElementById('pw-nav-btn')
+      if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 5px var(--green)' }
+      if (lbl) lbl.textContent = 'password set'
+      if (btn) btn.classList.add('pw-set')
+    }
+  } catch(e) { _backendHasPw = false }
+}
+
 function getPassword() {
+  // If user typed a password into the input, prefer it (allows manual override).
+  // Otherwise let the backend use its loaded credential.
   return document.getElementById('wallet-password')?.value || ''
+}
+
+function hasWalletAuth() {
+  return !!getPassword() || _backendHasPw
 }
 
 function openPwModal() {
@@ -1269,9 +1293,9 @@ const WALLET_ROUTES = ['/api/balance', '/api/profiles', '/api/stake_info', '/api
 async function runCmd(name, url, opts = {}) {
   const pw = getPassword()
 
-  // Guard: warn if wallet command but no password set
+  // Guard: warn if wallet command but neither typed password nor backend credential
   const needsPassword = WALLET_ROUTES.some(r => url.includes(r))
-  if (needsPassword && !pw) {
+  if (needsPassword && !hasWalletAuth()) {
     const block = addPending(name)
     resolveBlock(block, {
       ok: false, stdout: '',
@@ -1304,7 +1328,7 @@ async function runCmd(name, url, opts = {}) {
 // ── COMMANDS ──────────────────────────────────────────────────────────────────
 async function cmdStakeInfoAll() {
   const pw = getPassword()
-  if (!pw) {
+  if (!hasWalletAuth()) {
     const block = addPending('stake_info')
     resolveBlock(block, {ok:false, stdout:'', stderr:'No wallet password entered.', duration_ms:0, ts:new Date().toISOString()}, 'stake_info')
     return
@@ -1869,6 +1893,7 @@ document.addEventListener('click', e => {
 })
 
 // Initial load — populate config fields
+checkBackendPasswordStatus();
 loadConfig().then(() => {
   // Derive node indices from config, then build card containers before first render
   _NODE_INDICES = _deriveNodeIndices(_cfg)

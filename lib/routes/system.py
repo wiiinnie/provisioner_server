@@ -283,3 +283,14 @@ def rotation_reset_error():
     from ..rotation import reset_error
     reset_error()
     return jsonify({"ok": True})
+
+
+@bp.route("/api/password/status", methods=["GET"])
+def password_status():
+    """Reports whether get_password() can produce a non-empty password.
+    Used by the frontend to decide whether to show the wallet-password modal.
+    With systemd credential loading, the backend has a password from the moment
+    the service starts, so the modal is unnecessary in headless mode."""
+    from ..wallet import get_password
+    pw = get_password()
+    return jsonify({"set": bool(pw)})
