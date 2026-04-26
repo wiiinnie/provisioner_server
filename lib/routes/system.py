@@ -96,7 +96,7 @@ def set_config():
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
                   "node_0_log","node_1_log","node_2_log","node_3_log",
-                  "telegram_bot_token","telegram_chat_id")
+                  "telegram_bot_token","telegram_chat_id","node_state_url")
     for k in int_keys:
         if k in data:
             current[k] = max(100000,int(data[k])) if k=="gas_limit" else int(data[k])

@@ -1721,6 +1721,7 @@ async function loadConfig() {
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11
     document.getElementById('cfg-backfill').value       = _cfg.backfill_blocks ?? 200
+    document.getElementById('cfg-node-state-url').value = _cfg.node_state_url || ''
     // ── Master Heal config ──
     // Migration: if old master_threshold_pct exists and the new keys don't, use it
     // as a sane default for master_heal_threshold_pct (alert gets +20 pts).
@@ -1782,6 +1783,7 @@ async function saveConfig() {
     rotation_window:      parseInt(document.getElementById('cfg-rotation').value),
     snatch_window:        parseInt(document.getElementById('cfg-snatch').value),
     backfill_blocks:      parseInt(document.getElementById('cfg-backfill').value),
+    node_state_url:       document.getElementById('cfg-node-state-url').value.trim(),
     prov_0_address:        document.getElementById('cfg-prov-0-address').value.trim(),
     prov_1_address:        document.getElementById('cfg-prov-1-address').value.trim(),
     prov_2_address:        document.getElementById('cfg-prov-2-address').value.trim(),
@@ -1798,6 +1800,18 @@ async function saveConfig() {
     gas_price:            parseInt(document.getElementById('cfg-gas-price').value || '1'),
     sweeper_enabled:      !!(document.getElementById('cfg-sweeper-enabled')?.checked),
     telegram_bot_token:   document.getElementById('cfg-telegram-token').value.trim(),
+  }
+  // Restart prompt if node_state_url changed
+  const _newNodeStateUrl = document.getElementById('cfg-node-state-url').value.trim()
+  const _oldNodeStateUrl = (_cfg.node_state_url || '').trim()
+  if (_newNodeStateUrl !== _oldNodeStateUrl) {
+    const ok = confirm(
+      'You changed the Node State URL.\n\n' +
+      'This requires a server restart to take effect:\n' +
+      '  sudo systemctl restart sozu-dashboard\n\n' +
+      'Click OK to save the change (then restart manually), or Cancel to abort.'
+    )
+    if (!ok) return
   }
   try {
 
@@ -3131,6 +3145,8 @@ function _histBuild(r) {
           }
         },
         y: {
+          beginAtZero: true,
+          min: 0,
           grid: { color: 'rgba(255,255,255,0.04)' },
           ticks: {
             color: '#4a7a5a',
@@ -3217,6 +3233,9 @@ setInterval(() => {
 
       <label style="font-size:11px;color:var(--muted);">Backfill Blocks<br><span style="font-size:10px;color:var(--dim)">Blocks to scan on poller startup</span></label>
       <input class="modal-input" id="cfg-backfill" type="number" style="margin:0;" placeholder="200">
+
+      <label style="font-size:11px;color:var(--muted);">Node State URL<br><span style="font-size:10px;color:var(--dim)">override default (e.g. http://localhost:8080) — restart required</span></label>
+      <input class="modal-input" id="cfg-node-state-url" type="text" style="margin:0;" placeholder="leave blank for network default">
 
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Node Log Paths &amp; WebSocket Ports</label>
       <label style="font-size:11px;color:var(--muted);">Node 0 Log<br><span style="font-size:10px;color:var(--dim)">/var/log/rusk-1.log</span></label>

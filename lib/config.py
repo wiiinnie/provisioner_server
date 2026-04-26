@@ -116,6 +116,7 @@ _ROTATION_LOG_PATH = os.path.expanduser("~/.sozu_rotation.log")
 _ROTATION_STATE_PATH = os.path.expanduser("~/.sozu_rotation_enabled")
 
 _CONFIG_DEFAULTS = {
+    "node_state_url":          "",   # override _NODE_STATE_URL when set; restart required
     "network_id":              2,
     "contract_address":        CONTRACT_ID,
     "operator_address":        "",
@@ -192,6 +193,16 @@ def cfg(key: str):
 
 _load_config()
 
+
+# ── Apply node_state_url override from dashboard config ──────────────────────
+# If the user has set a custom Node State URL via the config modal, override
+# the network default. Modules that import _NODE_STATE_URL pick up the new
+# value at next process restart (which is what we tell the user in the UI).
+_user_state_url = (_cfg.get("node_state_url") or "").strip()
+if _user_state_url:
+    _NODE_STATE_URL = _user_state_url.rstrip("/")
+    GRAPHQL_URL     = f"{_NODE_STATE_URL}/on/graphql/query"
+    _log(f"[config] node_state_url override active: {_NODE_STATE_URL}")
 def CONTRACT_ADDRESS(): return cfg("contract_address") or CONTRACT_ID
 def OPERATOR_ADDRESS(): return cfg("operator_address")
 def NETWORK_ID():       return cfg("network_id") or 2
