@@ -1691,10 +1691,26 @@ async function fetchLivePanel() {
 fetchLivePanel()
 setInterval(fetchLivePanel, 30000)
 
+
+
+// ── Stake-info refresh debouncer ──────────────────────────────────────────────
+// _scheduleProvRefresh: coalesce multiple refresh triggers (manual cmd, RUES
+// event, page load) into at most one /api/stake_info_all call per ~1.5s. This
+// keeps the cards reactive to relevant changes without hitting the wallet
+// command queue 4× per block.
+let _provRefreshTimer = null
+function _scheduleProvRefresh(reason) {
+  if (_provRefreshTimer) return
+  _provRefreshTimer = setTimeout(() => {
+    _provRefreshTimer = null
+    _autoStakeInfo()
+  }, 1500)
+}
+
 // Auto-load stake info on startup to populate provisioner cards
 async function _autoStakeInfo() {
   const pw = getPassword()
-  if (!pw) return
+  if (!hasWalletAuth()) return
   try {
     const r = await fetch(`${API}/api/stake_info_all`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1717,8 +1733,9 @@ fetch(`${API}/api/version`).then(r=>r.json()).then(d=>{
   if (el) el.textContent = d.version || "?"
 }).catch(()=>{})
 
-// Baseline stake-info poll — 60s (events handle the fast path)
-setInterval(_autoStakeInfo, 60000)
+// Safety net: stake-info refresh every 5 min in case we miss an event.
+// Real-time updates flow through _scheduleProvRefresh from RUES events and manual cmd ack.
+setInterval(_autoStakeInfo, 300000)
 
 // ── CONFIGURATION ─────────────────────────────────────────────────────────────
 
@@ -1916,6 +1933,8 @@ loadConfig().then(() => {
 
   // First RUES poll after config loaded so address highlighting works from the start
   _pollRues()
+  // Initial stake-info load so cards populate without waiting for an event
+  _autoStakeInfo()
 })
 
 function pw() { return getPassword() }
@@ -2520,15 +2539,19 @@ async function _pollRues() {
     const latestBlock = (d.log || []).find(e => e.topic === 'block_accepted' && e.height)
     if (latestBlock) _onRuesBlock(latestBlock.height)
 
-    // Refresh provisioner cards immediately when a stake-changing event is detected
-    const _STAKE_CHANGE_TOPICS = new Set(['activate','liquidate','deactivate','unstake'])
-    const _newTs = (d.log || [])
+    // Refresh provisioner cards when a stake-changing event for OUR provisioners
+    // is detected. Filter by own addresses so unrelated network activity doesn't
+    // trigger expensive wallet refreshes.
+    const _STAKE_CHANGE_TOPICS = new Set(['activate','liquidate','deactivate','unstake','terminate','reward'])
+    const _newOwnEvent = (d.log || [])
       .filter(e => _STAKE_CHANGE_TOPICS.has(e.topic))
+      .filter(e => _containsOwnAddr(JSON.stringify(e.decoded || '')))
       .map(e => e.ts)
       .find(ts => ts && ts > (_lastStakeEventTs || ''))
-    if (_newTs) {
-      _lastStakeEventTs = _newTs
+    if (_newOwnEvent) {
+      _lastStakeEventTs = _newOwnEvent
       fetchLivePanel()
+      _scheduleProvRefresh('rues:stake-change')
     }
 
     // ── Raw tab hide-filter chips ─────────────────────────────────────────────
