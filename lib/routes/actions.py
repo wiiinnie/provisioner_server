@@ -88,6 +88,8 @@ def provisioner_addresses():
 def provisioner_add_provisioner():
     data = request.get_json() or {}
     pw   = data.get("password", "")
+    if not pw:
+        pw = get_password()
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
@@ -103,6 +105,8 @@ def provisioner_allocate_stake():
     """Stake activate — sends stake from pool to provisioner."""
     data        = request.get_json() or {}
     pw          = data.get("password", "")
+    if not pw:
+        pw = get_password()
     amount      = data.get("amount_dusk", 0)
     if "provisioner_idx" not in data or not amount:
         return jsonify({"ok": False, "stderr": "provisioner_idx and amount_dusk required"}), 400
@@ -174,6 +178,8 @@ def provisioner_allocate_stake():
 def provisioner_deactivate_stake():
     data = request.get_json() or {}
     pw   = data.get("password", "")
+    if not pw:
+        pw = get_password()
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
@@ -187,6 +193,8 @@ def provisioner_deactivate_stake():
 def provisioner_liquidate():
     data = request.get_json() or {}
     pw   = data.get("password", "")
+    if not pw:
+        pw = get_password()
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
@@ -199,6 +207,8 @@ def provisioner_liquidate():
 def provisioner_terminate():
     data = request.get_json() or {}
     pw   = data.get("password", "")
+    if not pw:
+        pw = get_password()
     prov = data.get("provisioner_address", "")
     if not prov:
         return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
@@ -211,6 +221,8 @@ def provisioner_terminate():
 def provisioner_remove_provisioner():
     data = request.get_json() or {}
     pw   = data.get("password", "")
+    if not pw:
+        pw = get_password()
     prov = data.get("provisioner_address", "")
     op   = data.get("operator_address", OPERATOR_ADDRESS())
     idx  = data.get("provisioner_idx")

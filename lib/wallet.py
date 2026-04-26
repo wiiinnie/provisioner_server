@@ -130,6 +130,8 @@ def wallet_cmd(subcmd: str, timeout: int = 30, password: str = "", gas_limit: in
     gp_flag      = f" --gas-price {GAS_PRICE()}"
     effective_gl = gas_limit if gas_limit > 0 else GAS_LIMIT()
     gl_flag      = f" --gas-limit {effective_gl}"
+    if not password:
+        password = get_password()
     if password:
         safe_pw = password.replace("'", "'\\''")
         inner   = f"{WALLET_BIN} {_NET} --password '{safe_pw}'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
@@ -180,6 +182,8 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
     gp_flag      = f" --gas-price {GAS_PRICE()}"
     effective_gl = gas_limit if gas_limit > 0 else GAS_LIMIT()
     gl_flag      = f" --gas-limit {effective_gl}"
+    if not password:
+        password = get_password()
     if password:
         safe_pw = password.replace("'", "'\\''")
         cmd     = f"{WALLET_BIN} {_NET} --password '{safe_pw}'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
