@@ -1423,7 +1423,7 @@ function _rotRoleChip(idx) {
 function renderNodeCard(idx, node, container, syncInfo, si) {
   if (!container) return
 
-  const rawStatus = si ? si.status.toLowerCase() : (node.status || 'inactive')
+  const rawStatus = (si && si.status) ? si.status.toLowerCase() : (node.status || 'inactive')
   const statusSymbol = { active:'●', maturing:'◑', seeded:'◎', inactive:'○' }
   const sym   = statusSymbol[rawStatus] || '○'
   const cls   = rawStatus in statusSymbol ? rawStatus : 'inactive'
