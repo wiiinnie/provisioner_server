@@ -579,15 +579,11 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                     _rlog_warn(f"master prov[{master_idx}] stake {master_stake:,.2f} DUSK "
                                f"< alert threshold {alert_dusk:,.2f} DUSK "
                                f"({alert_pct:.0f}% of target_master={target_master:,.0f}) — "
-                               f"sending alert")
-                    try:
-                        from .telegram import alert_master_below_threshold
-                        alert_master_below_threshold(
-                            master_idx, master_stake, alert_dusk,
-                            alert_pct, target_master)
-                    except Exception as _tg_err:
-                        _rlog_warn(f"telegram alert error: {_tg_err}")
-                    # ── HEAL hook: notify heal; heal uses its own (lower) threshold ──
+                               f"checking heal state and sending alert")
+                    # ── HEAL first: check_threshold_and_trigger may advance heal state
+                    # to AWAITING_N if stake also crossed the lower heal threshold.
+                    # Calling heal BEFORE the alert lets the alert reflect the
+                    # accurate post-trigger state in its message wording.
                     try:
                         from .heal import check_threshold_and_trigger
                         from .pool import _fast_alloc_pool
@@ -595,6 +591,15 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                             master_idx, master_stake, active_max, _fast_alloc_pool())
                     except Exception as _heal_err:
                         _rlog_warn(f"heal trigger error: {_heal_err}")
+                    # ── Now send the TG alert; alert_master_below_threshold reads
+                    # current heal state and tailors the message accordingly.
+                    try:
+                        from .telegram import alert_master_below_threshold
+                        alert_master_below_threshold(
+                            master_idx, master_stake, alert_dusk,
+                            alert_pct, target_master)
+                    except Exception as _tg_err:
+                        _rlog_warn(f"telegram alert error: {_tg_err}")
                 else:
                     # Condition resolved — reset cooldown so next crossing alerts again
                     try:
