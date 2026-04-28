@@ -416,7 +416,7 @@ def check_threshold_and_trigger(
       target_master      = active_max - rotation_floor
       threshold_dusk     = target_master * (master_threshold_pct / 100)
     """
-    if not cfg("heal_enabled"):
+    if not cfg("master_heal_enabled"):
         return False
 
     state = get_state()
@@ -702,7 +702,7 @@ def tick_heal(block_height: int) -> None:
     Per-block entry point. Handles COMPLETING → IDLE role swap at epoch boundary.
     All other state transitions are driven by rotation window hooks (not per-block).
     """
-    if not cfg("heal_enabled"):
+    if not cfg("master_heal_enabled"):
         return
     state = get_state()
 
