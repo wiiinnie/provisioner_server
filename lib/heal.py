@@ -566,18 +566,31 @@ def run_harvest(cur_epoch: int) -> None:
         master_addr  = _addr(old_master_idx, nodes)
         standby_addr = _addr(standby_idx, nodes)
 
-        # Find current rot_active (ta=0, in rotation pair)
+        # Find current rot_active (ta=0) AND rot_slave (ta=1, becoming next rot_active).
+        # Important: bulk allocation goes to rot_slave (next rot_active), not to the
+        # just-liquidated rot_active. The just-liquidated node only needs a 1k re-seed.
         rot = _rot_indices()
         rot_active_idx = next(
             (i for i in rot if nodes.get(i, {}).get("status") == "active"
              and nodes.get(i, {}).get("ta") == 0),
             None
         )
+        rot_slave_idx = next(
+            (i for i in rot if nodes.get(i, {}).get("status") in ("maturing", "seeded")
+             and nodes.get(i, {}).get("ta") == 1),
+            None
+        )
         if rot_active_idx is None:
             _hlog_err("run_harvest: no rot_active found — cannot proceed")
             _mark_failed()
             return
+        if rot_slave_idx is None:
+            _hlog_err("run_harvest: no rot_slave (ta=1) found — cannot proceed; "
+                      "no node available to receive bulk allocation as next rot_active")
+            _mark_failed()
+            return
         rot_active_addr = _addr(rot_active_idx, nodes)
+        rot_slave_addr  = _addr(rot_slave_idx, nodes)
 
         # Capacity for target allocation
         cap = _fetch_capacity_cached(_pw())
@@ -621,53 +634,78 @@ def run_harvest(cur_epoch: int) -> None:
         _hlog_ok(f"[3/5] rot_active drained — {stake_rot:.0f} DUSK freed; "
                  f"cumulative freed={freed_total:.0f}")
 
-        # ── Allocation priority (rot_active floor first, master second) ─────
-        # Rule: rotation nodes only have ONE epoch to earn before rotating out,
-        # so they need to hit rot_floor. Master stays active across many
-        # epochs and can recover via deposits. So: fill rot_active first, then
-        # give whatever's left to master.
+        # ── Allocation priority ──────────────────────────────────────────────
+        # Rotation nodes have one epoch as rot_active to earn — so the rot_slave
+        # (becoming next rot_active at epoch boundary) must hit rot_floor.
+        # Master stays active across many epochs and can recover via deposits;
+        # it gets the remainder up to target_master.
         #
-        # Existing stake on each:
-        #   - standby already has SEED_DUSK (1k) from epoch N seed
-        #   - rot_active just got liquidated to 0; needs to be re-seeded + topped up
-        # Remaining budget:
-        #   - freed_total (1.9M in the example) can flow into either
+        # Existing stake at this point:
+        #   - standby has SEED_DUSK (1k) from epoch N seed
+        #   - rot_slave (ta=1) has whatever was on it (typically 1k seed from
+        #     the prior epoch's rotation)
+        #   - rot_active just got liquidated to 0; needs only a 1k re-seed
+        # Remaining budget: freed_total to split between rot_slave (up to floor)
+        # and standby (up to target_master).
         #
-        # Step 4: fill rot_active to rot_floor
-        # Step 5: fill master with remainder, up to target_master
+        # Step 4: fill rot_slave to rot_floor          (becomes next rot_active)
+        # Step 5: re-seed rot_active with 1k           (just-liquidated; new rot_seeded)
+        # Step 6: fill standby with remainder          (becomes new master)
 
-        # ── Step 4: seed + top up rot_active to rot_floor ────────────────────
-        # rot_active was liquidated to 0; we need to bring it to rot_floor via
-        # one stake_activate call (no need for a separate seed+topup split).
-        rotactive_target  = rotation_floor
-        rotactive_alloc   = min(freed_total, rotactive_target)
-        _hlog_step(f"[4/5] allocate rot_active prov[{rot_active_idx}] with "
-                   f"{rotactive_alloc:,.2f} DUSK (target={rotactive_target:,.0f})")
-        if rotactive_alloc < 10.0:
-            _hlog_warn(f"[4/5] insufficient to allocate rot_active "
-                       f"({rotactive_alloc:.2f}) — skipping")
+        # ── Step 4: top up rot_slave to rot_floor ────────────────────────────
+        # rot_slave is becoming next rot_active. It needs to hit rot_floor for
+        # the next epoch's rotation cycle to work properly. The rot_slave
+        # already has some existing stake (typically 1k seed from prior epoch);
+        # we top it up by (rot_floor - existing_stake).
+        existing_rotslave = nodes.get(rot_slave_idx, {}).get("stake_dusk", 0.0)
+        rotslave_topup    = max(0.0, rotation_floor - existing_rotslave)
+        rotslave_alloc    = min(freed_total, rotslave_topup)
+        _hlog_step(f"[4/6] top up rot_slave prov[{rot_slave_idx}] with "
+                   f"{rotslave_alloc:,.2f} DUSK (existing={existing_rotslave:,.0f}, "
+                   f"target={rotation_floor:,.0f}; becomes next rot_active)")
+        if rotslave_alloc < 10.0:
+            _hlog_warn(f"[4/6] insufficient to top up rot_slave "
+                       f"({rotslave_alloc:.2f}) — skipping")
         else:
-            if not _fire_and_gap("stake_activate", rot_active_addr,
-                                 amount_dusk=rotactive_alloc):
+            if not _fire_and_gap("stake_activate", rot_slave_addr,
+                                 amount_dusk=rotslave_alloc):
                 _mark_failed(); return
-            _hlog_ok(f"[4/5] rot_active allocated {rotactive_alloc:,.2f} DUSK")
-            freed_total -= rotactive_alloc
+            _hlog_ok(f"[4/6] rot_slave topped up {rotslave_alloc:,.2f} DUSK")
+            freed_total -= rotslave_alloc
 
-        # ── Step 5: top up standby to target_master with remainder ──────────
-        # standby already has SEED_DUSK from epoch N. Space remaining on standby
-        # is target_master - SEED_DUSK.
+        # ── Step 5: re-seed just-liquidated rot_active with 1k ──────────────
+        # rot_active was liquidated to 0. It just needs the standard 1k seed
+        # to start the maturing cycle (ta=2 → ta=1 → ta=0 over 3 epochs).
+        rotactive_seed = SEED_DUSK
+        if freed_total < rotactive_seed:
+            _hlog_warn(f"[5/6] insufficient for rot_active reseed "
+                       f"({freed_total:.2f} < {rotactive_seed:.0f}) — skipping; "
+                       f"state check will retry seeding from pool")
+        else:
+            _hlog_step(f"[5/6] re-seed rot_active prov[{rot_active_idx}] with "
+                       f"{rotactive_seed:,.0f} DUSK (was just liquidated)")
+            if not _fire_and_gap("stake_activate", rot_active_addr,
+                                 amount_dusk=rotactive_seed):
+                _mark_failed(); return
+            _hlog_ok(f"[5/6] rot_active re-seeded {rotactive_seed:.0f} DUSK")
+            freed_total -= rotactive_seed
+
+        # ── Step 6: top up standby to target_master with remainder ──────────
+        # Standby already has SEED_DUSK from epoch N. Space remaining is
+        # target_master - SEED_DUSK.
         space_on_master = max(0.0, target_master - SEED_DUSK)
         master_alloc    = min(freed_total, space_on_master)
-        _hlog_step(f"[5/5] top up standby prov[{standby_idx}] with "
-                   f"{master_alloc:,.2f} DUSK (target={target_master:,.0f})")
+        _hlog_step(f"[6/6] top up standby prov[{standby_idx}] with "
+                   f"{master_alloc:,.2f} DUSK (target={target_master:,.0f}; "
+                   f"becomes new master)")
         if master_alloc < 10.0:
-            _hlog_warn(f"[5/5] insufficient to top up master ({master_alloc:.2f}) — "
+            _hlog_warn(f"[6/6] insufficient to top up master ({master_alloc:.2f}) — "
                        f"skipping; master will run undersized until sweeper refills")
         else:
             if not _fire_and_gap("stake_activate", standby_addr,
                                  amount_dusk=master_alloc):
                 _mark_failed(); return
-            _hlog_ok(f"[5/5] standby topped up with {master_alloc:,.2f} DUSK")
+            _hlog_ok(f"[6/6] standby topped up with {master_alloc:,.2f} DUSK")
             freed_total -= master_alloc
 
         if freed_total > 1.0:
