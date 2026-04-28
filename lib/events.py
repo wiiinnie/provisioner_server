@@ -317,22 +317,45 @@ def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None
 
     pw = get_password() or ""
 
-    # Cap to available global capacity — all in integer LUX, no float rounding
+    # Cap to available capacity. Two dimensions matter:
+    #   1. eligibility — active_maximum - active_current (how much active stake total)
+    #   2. slash collateral — locked_maximum - locked_current (10% backing)
+    # Top-up to an ACTIVE node consumes BOTH dimensions: contract requires
+    #   locked_added = topup_lux // 10 of headroom, else panics with
+    #   "operator should have enough locked capacity".
+    # _max_topup_active() returns the max top-up that respects locked headroom.
+    # For non-active targets (maturing/seeded/inactive), only eligibility applies.
     try:
-        from .assess import _fetch_capacity_cached, _invalidate_capacity_cache
-        cap             = _fetch_capacity_cached(pw)
-        available_dusk  = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
-        available_lux   = int(round(available_dusk * 1e9))
-        min_dep_lux     = round(float(cfg("min_deposit_dusk") or 100.0) * 1e9)
+        from .assess import _fetch_capacity_cached, _invalidate_capacity_cache, _max_topup_active, _assess_state_cached
+        cap   = _fetch_capacity_cached(pw)
+        nodes = _assess_state_cached(0, pw).get("by_idx", {})
+        target_status = (nodes.get(idx) or {}).get("status", "")
+        is_active     = target_status == "active"
+
+        # Eligibility headroom (dimension 1) — applies to all targets
+        elig_dusk = max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0))
+        elig_lux  = int(round(elig_dusk * 1e9))
+
+        # Slash headroom (dimension 2) — applies only to active top-ups
+        if is_active:
+            slash_dusk = _max_topup_active(cap)
+            slash_lux  = int(round(slash_dusk * 1e9))
+            available_lux = min(elig_lux, slash_lux)
+            cap_reason    = "active top-up: limited by min(eligibility, slash×10)"
+        else:
+            available_lux = elig_lux
+            cap_reason    = f"{target_status} target: limited by eligibility only"
+
+        min_dep_lux = round(float(cfg("min_deposit_dusk") or 100.0) * 1e9)
         if available_lux < min_dep_lux:
             _dlog({"type": "deposit_skipped", "step": 1,
-                   "msg": f"capacity full — available={available_lux/1e9:.4f} DUSK < {min_dep_lux/1e9:.0f} DUSK min — stake stays in pool",
+                   "msg": f"capacity full ({cap_reason}) — available={available_lux/1e9:.4f} DUSK < {min_dep_lux/1e9:.0f} DUSK min — stake stays in pool",
                    "amount": amount_lux / 1e9, "group_key": group_key, "ok": False})
             with _pending_lock:
                 _pending_activations.pop(addr, None)
             return
         if amount_lux > available_lux:
-            _log(f"[events] capping deposit {amount_lux/1e9:.4f} → {available_lux/1e9:.4f} DUSK (max capacity), remainder stays in pool")
+            _log(f"[events] capping deposit {amount_lux/1e9:.4f} → {available_lux/1e9:.4f} DUSK ({cap_reason}), remainder stays in pool")
             amount_lux = available_lux
         # Invalidate cache NOW before firing so concurrent threads re-fetch fresh capacity
         _invalidate_capacity_cache()
@@ -405,36 +428,61 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
     block_height = decoded.get("block_height") or block_height
     inner = decoded.get("inner") or decoded
     call  = inner.get("call") or {}
-    if call.get("fn_name") != "stake_activate":
+    fn_name_dbg = call.get("fn_name")
+    if fn_name_dbg != "stake_activate":
         return
 
-    prov_decoded = call.get("_fn_args_decoded") or {}
-    prov_addr    = (prov_decoded.get("keys") or {}).get("account") or ""
-    amount_lux   = int(str(prov_decoded.get("value") or 0))
-    amount_dusk  = amount_lux / 1e9
-    err          = decoded.get("err")
-    gas_spent    = decoded.get("gas_spent")
-    gas_limit    = (inner.get("fee") or {}).get("gas_limit")
+    # Same extraction logic as rues.py — handle all 4 shapes:
+    #   dict with 'provisioner' key, dict with 'keys.account' path,
+    #   dict with 'provisioners' list, or bare string (liquidate/terminate).
+    fn_dec = call.get("_fn_args_decoded") or {}
+    if isinstance(fn_dec, str):
+        prov_addr    = fn_dec
+        prov_decoded = {}
+    else:
+        prov_addr    = (fn_dec.get("provisioner") or
+                        (fn_dec.get("keys") or {}).get("account") or
+                        ((fn_dec.get("provisioners") or [None])[0]) or "")
+        prov_decoded = fn_dec
 
+    amount_lux  = int(str(prov_decoded.get("value") or 0))
+    amount_dusk = amount_lux / 1e9
+    err         = decoded.get("err")
+    gas_spent   = decoded.get("gas_spent")
+    gas_limit   = (inner.get("fee") or {}).get("gas_limit")
+
+    # Race-scope gate: tx must match an in-flight race we initiated.
+    # _race_lost_amounts[amount_key] is set in _do_allocate before our tx fires
+    # and survives ~60s. Any stake_activate tx in that window for the same amount
+    # belongs to this race (ours or a competitor's).
+    amount_key = round(amount_dusk, 4)
+    with _race_lost_lock:
+        race_entry = _race_lost_amounts.get(amount_key)
+    if race_entry is None:
+        return  # not a race we're tracking — manual UI op, sweeper, or stale event
+
+    # Of the matched-amount txs, only OUR provisioner addresses count for the
+    # win/loss counter. Competitor txs are handled by _handle_activate's
+    # "lost_to" log (for their wins) and ignored entirely if they failed.
     own = _own_addresses()
-    if prov_addr and own and prov_addr not in own:
-        return
+    is_own = bool(prov_addr) and bool(own) and (prov_addr in own)
+    if not is_own:
+        return  # competitor's tx; not our counter
 
+    # Optional timing enrichment from _pending_activations.
     with _pending_lock:
         pending = _pending_activations.get(prov_addr)
 
-    # Deposit race log is reserved for actual races. _do_allocate (the
-    # deposit-race path) is the only code that writes _pending_activations.
-    # Manual UI allocations and sweeper activations bypass it, so pending
-    # being None means this tx was NOT a race — skip the log + counter.
-    if pending is None:
-        return
-
     now = time.time()
-    exec_elapsed     = round(now - pending["wall_ts"], 1)      if pending else None
-    included_elapsed = round(pending["included_ts"] - pending["wall_ts"], 1) \
-                       if pending and pending.get("included_ts") else None
-    pending_group_key = (pending or {}).get("group_key")
+    if pending:
+        exec_elapsed     = round(now - pending["wall_ts"], 1)
+        included_elapsed = (round(pending["included_ts"] - pending["wall_ts"], 1)
+                            if pending.get("included_ts") else None)
+        pending_group_key = pending.get("group_key")
+    else:
+        exec_elapsed = None
+        included_elapsed = None
+        pending_group_key = race_entry.get("group_key") if race_entry else None
 
     def _timing_str() -> str:
         parts = []
@@ -448,6 +496,7 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
         with _race_lock:
             _race_wins += 1
         wins, losses = _race_wins, _race_losses
+        win_group_key = pending_group_key or (race_entry.get("group_key") if race_entry else None)
         _dlog({
             "type":             "tx_confirmed",
             "step":             2,
@@ -462,6 +511,7 @@ def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
             "included_elapsed": included_elapsed,
             "wins":             wins,
             "losses":           losses,
+            "group_key":        win_group_key,
             "ok":               True,
         })
     else:
@@ -504,9 +554,12 @@ def _handle_activate(decoded: dict, block_height: int | None) -> None:
 
     own = _own_addresses()
 
-    # Check if this activate matches an amount we just lost — log who won
+    # Look up race entry for this amount — but DO NOT pop it.
+    # _handle_tx_executed needs it to gate the win/loss counter, and it may
+    # arrive after this activate event (step 3 can fire before step 2 in some
+    # RUES dispatch orderings). Entry expires by TTL only (60s).
     with _race_lost_lock:
-        lost_entry = _race_lost_amounts.pop(amount_key, None)
+        lost_entry = _race_lost_amounts.get(amount_key)
         # Clean stale entries (> 60s old)
         now = time.time()
         for k in list(_race_lost_amounts):
@@ -542,21 +595,8 @@ def _handle_activate(decoded: dict, block_height: int | None) -> None:
     if prov_addr and own and prov_addr not in own:
         return
 
+    # Step 3 own-activation log dropped: step 2 (tx_confirmed) already provides
+    # the authoritative win signal with block height and timing. Just clean up
+    # the pending entry.
     with _pending_lock:
-        pending = _pending_activations.pop(prov_addr, None)
-
-    if not pending:
-        return
-
-    elapsed = round(time.time() - pending["wall_ts"], 1)
-    _dlog({
-        "type":      "activate_confirmed",
-        "step":      3,
-        "msg":       (f"✓ stake live on-chain blk #{block_height}"
-                      + (f" · {elapsed}s total" if elapsed else "")),
-        "prov_addr": prov_addr,
-        "amount":    amount_dusk,
-        "block":     block_height,
-        "elapsed_s": elapsed,
-        "ok":        True,
-    })
+        _pending_activations.pop(prov_addr, None)
