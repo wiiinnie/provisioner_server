@@ -612,8 +612,13 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
 
         # ── Record sweeper candidate (regular window only, sweeper enabled) ──
         # During rotation window, the pool holds freed liquidation stake — don't touch it.
+        # Plus a 10-block buffer before rotation window: a sweeper tx fired right
+        # before pre-check can stay stuck in mempool and block the rotation liquidate
+        # with "spendId exists in mempool" errors. Also skip the buffer block itself
+        # (re-check would fire at rotation_window+1 blocks otherwise).
         _rot_win = int(cfg("rotation_window") or 41)
-        if bool(cfg("sweeper_enabled")) and blk_left > _rot_win:
+        _sweeper_buffer = 10  # blocks of breathing room between sweeper and rotation
+        if bool(cfg("sweeper_enabled")) and blk_left > _rot_win + _sweeper_buffer:
             try:
                 pool_now   = _pool_dusk()
                 min_sweep  = float(cfg("min_deposit_dusk") or 100.0)
@@ -1116,6 +1121,17 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
             _rlog_info("[3/3] state check will retry seeding from pool on next tick")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[3/3] prov[{smaller_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
+
+    # ── HEAL hook: in epoch N during A:2 recovery, append standby seed ──
+    # Same heal hook as normal rotation — A:2 still consumes the rotation
+    # window, so heal's epoch-N seed should fire here too.
+    try:
+        from .heal import wants_epoch_n_seed, perform_epoch_n_seed
+        if wants_epoch_n_seed():
+            _rlog_step("heal: appending epoch-N seed of standby after A:2 recovery")
+            perform_epoch_n_seed(cur_epoch)
+    except Exception as _heal_err:
+        _rlog_warn(f"heal epoch-N seed hook error (A:2): {_heal_err}")
 
     _rlog_ok(f"─── A:2 recovery epoch {cur_epoch} complete ✓ ───")
     _rlog_info(f"next state: prov[{smaller_idx}] → ta=1 next epoch → healthy A:1 M:1")
