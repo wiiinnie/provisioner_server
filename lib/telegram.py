@@ -74,21 +74,62 @@ def alert_master_below_threshold(
         alert_threshold_pct: float,
         target_master_dusk: float,
 ) -> None:
-    """Fired when master stake drops below the ALERT threshold (but heal has
-    not yet triggered — heal fires at the lower heal threshold).
+    """Fired when master stake drops below the ALERT threshold. Message wording
+    adapts to current heal state.
     """
+    heal_status_line = (
+        "Heal will trigger automatically if stake drops further to the heal "
+        "threshold. No manual action needed."
+    )
+    try:
+        from .heal import _heal_state, _heal_state_lock
+        with _heal_state_lock:
+            hs = dict(_heal_state)
+        state = hs.get("state", "idle")
+        standby_idx = hs.get("standby_idx")
+
+        if state == "awaiting_n":
+            heal_status_line = (
+                f"\U0001F527 <b>Heal already scheduled.</b> Stake is below the "
+                f"heal threshold; standby prov{standby_idx} will be seeded at "
+                f"the next rotation window. No manual action needed."
+            )
+        elif state == "seeded":
+            defer = hs.get("deferral_count", 0)
+            extra = ""
+            if defer:
+                extra = f" Harvest deferred {defer}\u00d7 (we are unstake target)."
+            heal_status_line = (
+                f"\U0001F331 <b>Heal in progress.</b> Standby prov{standby_idx} "
+                f"already seeded. Harvest runs at next rotation window.{extra}"
+            )
+        elif state == "harvesting":
+            heal_status_line = (
+                f"\u26A1 <b>Heal harvesting.</b> Liquidation + new master "
+                f"funding in progress."
+            )
+        elif state == "completing":
+            heal_status_line = (
+                f"\u2705 <b>Heal nearly complete.</b> Role swap at next epoch boundary."
+            )
+        elif state == "failed":
+            heal_status_line = (
+                f"\U0001F534 <b>Heal in FAILED state.</b> Will retry on next "
+                f"threshold check. Manual reset may be needed."
+            )
+    except Exception:
+        pass
+
     msg = (
-        f"⚠️ <b>SOZU — Master Alert</b>\n\n"
+        f"\u26A0\uFE0F <b>SOZU \u2014 Master Alert</b>\n\n"
         f"prov{prov_idx} stake has crossed the alert threshold.\n\n"
         f"<b>Current stake:</b> {stake_dusk:,.2f} DUSK\n"
         f"<b>Alert threshold ({alert_threshold_pct:.0f}% of target):</b> "
         f"{alert_threshold_dusk:,.2f} DUSK\n"
         f"<b>Target master:</b> {target_master_dusk:,.0f} DUSK\n\n"
-        f"Heal will trigger automatically if stake drops further to the heal "
-        f"threshold. No manual action needed."
+        f"{heal_status_line}"
     )
     send_async(msg, alert_key="master_below_alert_threshold")
-
 
 def alert_heal_triggered(
         prov_idx: int,
