@@ -469,8 +469,24 @@ def _run_snatch(cur_epoch: int, blk_left: int) -> None:
     """
     Fires on first block of snatch window. No candidate wait — act immediately.
     Only targets ta=1 (rot_slave) — no slash, active next epoch.
+
+    Heal coordination: if heal is mid-cycle (HARVESTING / FAILED with pending
+    pool), snatch must NOT drain the pool — heal expects to allocate the freed
+    stake to the standby master in the same window. Pool stays untouched until
+    heal returns to IDLE/COMPLETING/SEEDED.
     """
     try:
+        # Heal coordination: skip snatch while heal is mid-harvest or in failed state.
+        try:
+            from .heal import get_state, HARVESTING, FAILED
+            heal_state = get_state()
+            if heal_state in (HARVESTING, FAILED):
+                _rlog_warn(f"snatch window: heal state={heal_state} — skipping to "
+                           f"preserve pool for heal allocation/recovery")
+                return
+        except Exception as _heal_err:
+            _rlog_warn(f"snatch window: heal state check failed: {_heal_err} — proceeding")
+
         min_sweep = float(cfg("min_deposit_dusk") or 100.0)
         pool      = _pool_dusk()
         _rlog_info(f"snatch window: pool={pool:.4f} DUSK")
