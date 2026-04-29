@@ -545,12 +545,108 @@ def _run_snatch(cur_epoch: int, blk_left: int) -> None:
 
 # ── Periodic state check ──────────────────────────────────────────────────────
 
+# ── locked_max_pct sync ──────────────────────────────────────────────────────
+_locked_pct_synced_epoch: int = -1
+
+def _sync_locked_max_pct(cur_epoch: int) -> None:
+    """Once per epoch, verify on-chain locked-cap pct vs configured value.
+
+    The percentage itself isn't used in slash-headroom math (that uses the
+    absolute `cap['locked_maximum']` from chain). This sync exists to:
+      - keep the configured value honest as a documented expectation
+      - alert when the chain protocol param changes (e.g. testnet 2% →
+        mainnet 5%, or any future mainnet bump)
+    """
+    global _locked_pct_synced_epoch
+    if cur_epoch <= _locked_pct_synced_epoch:
+        return
+
+    try:
+        from .wallet import get_password
+        from .assess import _fetch_capacity_cached
+        from . import config as _config_mod
+    except Exception as e:
+        _rlog_warn(f"locked_max_pct sync: import error: {e}")
+        return
+
+    pw = get_password()
+    if not pw:
+        # Wallet not unlocked yet — defer (don't mark this epoch as synced).
+        return
+
+    try:
+        cap = _fetch_capacity_cached(pw, force=True)
+    except Exception as e:
+        _rlog_warn(f"locked_max_pct sync: capacity fetch error: {e}")
+        return
+
+    active_max = float(cap.get("active_maximum", 0.0) or 0.0)
+    locked_max = float(cap.get("locked_maximum", 0.0) or 0.0)
+
+    if active_max <= 0:
+        _rlog_warn("locked_max_pct sync: active_maximum=0 from chain — deferring")
+        return
+
+    observed_pct   = round(locked_max / active_max * 100.0, 2)
+    configured_pct = float(_config_mod._cfg.get("locked_max_pct", 2.0))
+
+    # Mark as synced for this epoch regardless of drift result (we got valid
+    # data; another retry this epoch is unnecessary).
+    _locked_pct_synced_epoch = cur_epoch
+
+    if abs(observed_pct - configured_pct) < 0.01:
+        _rlog_info(
+            f"locked_max_pct sync: chain={observed_pct}% matches "
+            f"config={configured_pct}% (locked_max={locked_max:,.0f}/"
+            f"active_max={active_max:,.0f} DUSK)"
+        )
+        return
+
+    # Drift detected.
+    _rlog_warn(
+        f"locked_max_pct DRIFT: chain={observed_pct}% "
+        f"(locked_max={locked_max:,.0f} / active_max={active_max:,.0f} DUSK) "
+        f"!= config={configured_pct}% — auto-updating config"
+    )
+
+    try:
+        _config_mod._cfg["locked_max_pct"] = observed_pct
+        _config_mod._save_config()
+    except Exception as e:
+        _rlog_warn(f"locked_max_pct sync: _save_config failed: {e}")
+
+    # TG alert (best-effort, multiple shapes supported)
+    try:
+        try:
+            from .telegram import alert_locked_max_pct_drift  # type: ignore
+            alert_locked_max_pct_drift(configured_pct, observed_pct,
+                                       locked_max, active_max)
+        except ImportError:
+            from .telegram import send_telegram_message  # type: ignore
+            send_telegram_message(
+                f"⚠️ <b>Slash-cap drift detected</b>\n\n"
+                f"Chain reports <code>{observed_pct}%</code> "
+                f"(locked_max={locked_max:,.0f} / "
+                f"active_max={active_max:,.0f} DUSK)\n"
+                f"Previous config: <code>{configured_pct}%</code>\n\n"
+                f"Config auto-updated. Chain protocol param has changed."
+            )
+    except Exception as e:
+        _rlog_warn(f"locked_max_pct sync: TG alert failed: {e}")
+
+
 def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
     """
     Runs every STATE_CHECK_BLOCKS. Assesses provisioner state and acts:
     seeds inactive nodes, fixes unstaggered maturing nodes.
     """
     _rlog_info(f"state check blk={block_height} epoch={cur_epoch} blk_left={blk_left}")
+
+    # ── locked_max_pct sync (once per epoch) ──────────────────────────────────
+    try:
+        _sync_locked_max_pct(cur_epoch)
+    except Exception as _lpct_err:
+        _rlog_warn(f"locked_max_pct sync error: {_lpct_err}")
     try:
         st    = _assess()
         nodes = st.get("by_idx", {})

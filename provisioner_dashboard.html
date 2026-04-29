@@ -1774,6 +1774,7 @@ async function loadConfig() {
     document.getElementById('cfg-master-alert-threshold-pct').value = _alertThr
     document.getElementById('cfg-master-heal-threshold-pct').value  = _healThr
     document.getElementById('cfg-rotation-floor-pct').value         = _cfg.rotation_floor_pct ?? 20
+    document.getElementById('cfg-locked-max-pct').value = _cfg.locked_max_pct != null ? _cfg.locked_max_pct : 2.0
     document.getElementById('cfg-max-harvest-deferrals').value      = _cfg.max_harvest_deferrals ?? 3
     document.getElementById('cfg-telegram-token').value  = _cfg.telegram_bot_token || ''
     document.getElementById('cfg-telegram-chatid').value = _cfg.telegram_chat_id || ''
@@ -1833,6 +1834,7 @@ async function saveConfig() {
     master_alert_threshold_pct: parseFloat(document.getElementById('cfg-master-alert-threshold-pct').value || '70'),
     master_heal_threshold_pct:  parseFloat(document.getElementById('cfg-master-heal-threshold-pct').value || '50'),
     rotation_floor_pct:       parseFloat(document.getElementById('cfg-rotation-floor-pct').value || '20'),
+      locked_max_pct: parseFloat(document.getElementById('cfg-locked-max-pct').value) || 2.0,
     max_harvest_deferrals:    parseInt(document.getElementById('cfg-max-harvest-deferrals').value || '3'),
     telegram_chat_id:     document.getElementById('cfg-telegram-chatid').value.trim(),
     min_deposit_dusk:     parseFloat(document.getElementById('cfg-min-deposit').value || '100'),
@@ -3346,6 +3348,10 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Rotation Floor (%)<br><span style="font-size:10px;color:var(--dim)">rot_active reserved stake = max_capacity × X% (default 20). target_master = 100% − this.</span></label>
       <input class="modal-input" id="cfg-rotation-floor-pct" type="number" step="1" min="1" max="50" style="margin:0;" placeholder="20">
 
+
+      <label style="font-size:11px;color:var(--muted);">Slash Cap (% of max active stake)<br>
+<span style="font-size:10px;color:var(--dim)">chain protocol param — auto-synced once per epoch</span></label>
+      <input class="modal-input" id="cfg-locked-max-pct" type="number" step="0.01" min="0" max="100" style="margin:0;" placeholder="2.0">
       <label style="font-size:11px;color:var(--muted);">Max Harvest Deferrals<br><span style="font-size:10px;color:var(--dim)">consecutive harvest defers allowed when we are substrate unstake-target; force-run at this cap (default 3)</span></label>
       <input class="modal-input" id="cfg-max-harvest-deferrals" type="number" step="1" min="0" max="20" style="margin:0;" placeholder="3">
 

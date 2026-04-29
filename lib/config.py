@@ -141,6 +141,7 @@ _CONFIG_DEFAULTS = {
     "master_heal_threshold_pct":   50.0,  # heal triggers at X% of target_master
     "rotation_floor_pct":          20.0,  # rot_active target = max_cap × X %
     "max_harvest_deferrals":       3,  # defers when unstake-target; force-run at cap
+    "locked_max_pct":              2.0,  # max combined locked stake as % of active_maximum (auto-synced from chain once per epoch)
     "master_threshold_pct":    15.0,   # alert when prov0 stake < X% of active_maximum
     "telegram_bot_token":      "",
     "telegram_chat_id":        "",
