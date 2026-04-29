@@ -499,9 +499,12 @@ def perform_epoch_n_seed(cur_epoch: int) -> bool:
         # Wait the block gap since last tx from rotation's step 4.
         # We don't have rotation's executed_block handy, so wait for "any"
         # next block_accepted as a safe proxy (block gap 1).
+        # Filter None values from heights — nodes that haven't reported yet
+        # would otherwise crash max() with a TypeError on None comparison.
         from .nodes import get_heights
-        heights = get_heights()
-        last_seen = max(heights.values(), default=0) if heights else 0
+        heights = get_heights() or {}
+        valid_heights = [h for h in heights.values() if h is not None and h > 0]
+        last_seen = max(valid_heights) if valid_heights else 0
         if last_seen > 0:
             from .rues import wait_for_block
             target = last_seen + BLOCK_GAP
