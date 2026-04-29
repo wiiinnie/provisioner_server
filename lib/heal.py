@@ -605,14 +605,18 @@ def run_harvest(cur_epoch: int) -> None:
         freed_total = 0.0
 
         # ── Step 1: liquidate old master ─────────────────────────────────────
+        # Locked DOES return to pool on liquidate (it doesn't earn rewards
+        # while locked, but it's not slashed/burned — it's released).
         stake_master = nodes.get(old_master_idx, {}).get("stake_dusk", 0.0)
         locked_master = nodes.get(old_master_idx, {}).get("locked_dusk", 0.0)
         _hlog_step(f"[1/7] liquidate master prov[{old_master_idx}] "
                    f"(stake={stake_master:.0f}, locked={locked_master:.0f})")
         if not _fire_and_gap("liquidate", master_addr):
             _mark_failed(); return
-        freed_total += stake_master   # locked is slashed, only stake returns
-        _hlog_ok(f"[1/7] master drained — {stake_master:.0f} DUSK freed")
+        freed_master = stake_master + locked_master
+        freed_total += freed_master
+        _hlog_ok(f"[1/7] master drained — {freed_master:.0f} DUSK freed "
+                 f"(stake={stake_master:.0f} + locked={locked_master:.0f})")
 
         # ── Step 2: terminate old master ─────────────────────────────────────
         rewards_master = nodes.get(old_master_idx, {}).get("reward_dusk", 0.0)
@@ -631,8 +635,10 @@ def run_harvest(cur_epoch: int) -> None:
                    f"(stake={stake_rot:.0f}, locked={locked_rot:.0f})")
         if not _fire_and_gap("liquidate", rot_active_addr):
             _mark_failed(); return
-        freed_total += stake_rot
-        _hlog_ok(f"[3/7] rot_active drained — {stake_rot:.0f} DUSK freed; "
+        freed_rot = stake_rot + locked_rot
+        freed_total += freed_rot
+        _hlog_ok(f"[3/7] rot_active drained — {freed_rot:.0f} DUSK freed "
+                 f"(stake={stake_rot:.0f} + locked={locked_rot:.0f}); "
                  f"cumulative freed={freed_total:.0f}")
 
         # ── Step 4: terminate rot_active (free rewards + clear provisioner record) ──
