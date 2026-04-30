@@ -42,7 +42,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from .config import _log, cfg, _ROTATION_LOG_PATH
+from .config import _log, cfg, _ROTATION_LOG_PATH, ROTATION_PAIR
 
 SEED_DUSK    = 1000.0
 EPOCH_BLOCKS = 2160
@@ -276,22 +276,17 @@ def _master_idx() -> int:
     return int(v) if v is not None else -1
 
 
-def _master_indices() -> list[int]:
-    """Return all indices excluded from rotation (masters + standbys)."""
-    primary = _master_idx()
-    # prov0 = primary master, prov1 = standby master — both excluded from rotation
-    # Standbys are any configured index below the first rotation node (idx < 2)
-    excluded = set()
-    if primary >= 0:
-        excluded.add(primary)
-    excluded.add(1)  # prov1 always standby — never rotated
-    return sorted(excluded)
-
-
 def _rot_indices() -> list[int]:
-    from .config import NODE_INDICES
-    excl = set(_master_indices())
-    return [i for i in NODE_INDICES if i not in excl]
+    """Return the rotation pair indices.
+
+    The split between MASTER_PAIR=(0,1) and ROTATION_PAIR=(2,3) is an
+    architectural invariant defined in lib/config.py — it does NOT depend on
+    which of {0,1} is currently the active master. Heal owns MASTER_PAIR;
+    rotation and deposit-race code own ROTATION_PAIR. Mixing them caused the
+    standby-leakage bug where, with master_idx=1, the heal-managed standby
+    prov[0] could be picked up as a rotation candidate.
+    """
+    return list(ROTATION_PAIR)
 
 
 def _pw() -> str:
