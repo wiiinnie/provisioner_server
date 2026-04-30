@@ -2407,7 +2407,11 @@ async function _pollDepositLog() {
                   : e.type==='tx_failed'                                      ? 'var(--red)'
                   : e.ok===false                                              ? 'var(--red)'
                   : 'var(--cyan)'
-        const blkStr = e.block ? ` blk#${e.block.toLocaleString()}` : ''
+        // Show block# only on step 2 (the authoritative tx/executed block).
+        // Step 1 (deposit) and step 2.5 (lost_to) blocks are noisy and not
+        // race-decisive.
+        const blkStr = (false && e.block && e.step === 2)
+                       ? ` blk#${e.block.toLocaleString()}` : ''
         return `<div style="padding:1px 0;font-size:8.5px;">` +
           `<span style="color:var(--dim)">${e.ts||''}</span> ` +
           stepLabel +

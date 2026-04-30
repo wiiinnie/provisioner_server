@@ -72,6 +72,11 @@ def _signal_tx_confirms(fn_name: str, decoded: dict, prov_addr: str = "") -> Non
 # Used by heal harvest to wait N blocks between sequential txs (e.g. liquidate →
 # terminate needs a 2-block gap). Heal registers an Event keyed on target block;
 # _signal_block_reached fires any events whose target is <= incoming block.
+
+# Latest block height observed via block_accepted — used as fallback when
+# contract events arrive without their own block context (RUES dispatcher
+# only attaches height for block_accepted topic).
+_last_known_height: int = 0
 _block_waiters:      dict = {}           # {target_block: threading.Event}
 _block_waiters_lock       = threading.Lock()
 
@@ -318,6 +323,7 @@ def _decode_payload(location: str, payload: bytes) -> dict:
 
 def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None:
     ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    global _last_known_height
     height = None
     if topic == "block_accepted":
         h = decoded.get("header") or {}
@@ -332,6 +338,7 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
             if m:
                 height = int(m.group(1))
         if height:
+            _last_known_height = height
             _log(f"[rues] block height={height}")
     entry = {
         "ts":          ts,
@@ -351,7 +358,12 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
     # Fire event action engine
     try:
         from .events import on_event
-        on_event(topic, decoded, height)
+        # For contract events (activate, deposit, reward, etc.) RUES doesn't
+        # attach a height. Use the most recent block_accepted height as fallback
+        # — accurate within ~one block since contract events fire in the same
+        # block as the originating tx.
+        _eff_height = height if height else _last_known_height
+        on_event(topic, decoded, _eff_height)
     except Exception as _ev_err:
         _log(f"[events] on_event({topic}) error: {_ev_err}")
 

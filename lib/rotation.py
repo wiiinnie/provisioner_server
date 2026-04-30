@@ -469,8 +469,24 @@ def _run_snatch(cur_epoch: int, blk_left: int) -> None:
     """
     Fires on first block of snatch window. No candidate wait — act immediately.
     Only targets ta=1 (rot_slave) — no slash, active next epoch.
+
+    Heal coordination: if heal is mid-cycle (HARVESTING / FAILED with pending
+    pool), snatch must NOT drain the pool — heal expects to allocate the freed
+    stake to the standby master in the same window. Pool stays untouched until
+    heal returns to IDLE/COMPLETING/SEEDED.
     """
     try:
+        # Heal coordination: skip snatch while heal is mid-harvest or in failed state.
+        try:
+            from .heal import get_state, HARVESTING, FAILED
+            heal_state = get_state()
+            if heal_state in (HARVESTING, FAILED):
+                _rlog_warn(f"snatch window: heal state={heal_state} — skipping to "
+                           f"preserve pool for heal allocation/recovery")
+                return
+        except Exception as _heal_err:
+            _rlog_warn(f"snatch window: heal state check failed: {_heal_err} — proceeding")
+
         min_sweep = float(cfg("min_deposit_dusk") or 100.0)
         pool      = _pool_dusk()
         _rlog_info(f"snatch window: pool={pool:.4f} DUSK")
@@ -579,15 +595,11 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                     _rlog_warn(f"master prov[{master_idx}] stake {master_stake:,.2f} DUSK "
                                f"< alert threshold {alert_dusk:,.2f} DUSK "
                                f"({alert_pct:.0f}% of target_master={target_master:,.0f}) — "
-                               f"sending alert")
-                    try:
-                        from .telegram import alert_master_below_threshold
-                        alert_master_below_threshold(
-                            master_idx, master_stake, alert_dusk,
-                            alert_pct, target_master)
-                    except Exception as _tg_err:
-                        _rlog_warn(f"telegram alert error: {_tg_err}")
-                    # ── HEAL hook: notify heal; heal uses its own (lower) threshold ──
+                               f"checking heal state and sending alert")
+                    # ── HEAL first: check_threshold_and_trigger may advance heal state
+                    # to AWAITING_N if stake also crossed the lower heal threshold.
+                    # Calling heal BEFORE the alert lets the alert reflect the
+                    # accurate post-trigger state in its message wording.
                     try:
                         from .heal import check_threshold_and_trigger
                         from .pool import _fast_alloc_pool
@@ -595,6 +607,15 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                             master_idx, master_stake, active_max, _fast_alloc_pool())
                     except Exception as _heal_err:
                         _rlog_warn(f"heal trigger error: {_heal_err}")
+                    # ── Now send the TG alert; alert_master_below_threshold reads
+                    # current heal state and tailors the message accordingly.
+                    try:
+                        from .telegram import alert_master_below_threshold
+                        alert_master_below_threshold(
+                            master_idx, master_stake, alert_dusk,
+                            alert_pct, target_master)
+                    except Exception as _tg_err:
+                        _rlog_warn(f"telegram alert error: {_tg_err}")
                 else:
                     # Condition resolved — reset cooldown so next crossing alerts again
                     try:
@@ -607,8 +628,13 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
 
         # ── Record sweeper candidate (regular window only, sweeper enabled) ──
         # During rotation window, the pool holds freed liquidation stake — don't touch it.
+        # Plus a 10-block buffer before rotation window: a sweeper tx fired right
+        # before pre-check can stay stuck in mempool and block the rotation liquidate
+        # with "spendId exists in mempool" errors. Also skip the buffer block itself
+        # (re-check would fire at rotation_window+1 blocks otherwise).
         _rot_win = int(cfg("rotation_window") or 41)
-        if bool(cfg("sweeper_enabled")) and blk_left > _rot_win:
+        _sweeper_buffer = 10  # blocks of breathing room between sweeper and rotation
+        if bool(cfg("sweeper_enabled")) and blk_left > _rot_win + _sweeper_buffer:
             try:
                 pool_now   = _pool_dusk()
                 min_sweep  = float(cfg("min_deposit_dusk") or 100.0)
@@ -1111,6 +1137,17 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
             _rlog_info("[3/3] state check will retry seeding from pool on next tick")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[3/3] prov[{smaller_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
+
+    # ── HEAL hook: in epoch N during A:2 recovery, append standby seed ──
+    # Same heal hook as normal rotation — A:2 still consumes the rotation
+    # window, so heal's epoch-N seed should fire here too.
+    try:
+        from .heal import wants_epoch_n_seed, perform_epoch_n_seed
+        if wants_epoch_n_seed():
+            _rlog_step("heal: appending epoch-N seed of standby after A:2 recovery")
+            perform_epoch_n_seed(cur_epoch)
+    except Exception as _heal_err:
+        _rlog_warn(f"heal epoch-N seed hook error (A:2): {_heal_err}")
 
     _rlog_ok(f"─── A:2 recovery epoch {cur_epoch} complete ✓ ───")
     _rlog_info(f"next state: prov[{smaller_idx}] → ta=1 next epoch → healthy A:1 M:1")
