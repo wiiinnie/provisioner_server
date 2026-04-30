@@ -30,7 +30,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from .config import _log, cfg
+from .config import _log, cfg, ROTATION_PAIR
 
 EPOCH_BLOCKS: int = 2160
 
@@ -203,9 +203,7 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
                "amount":amount_dusk,"window":window,"ok":False})
         return
 
-    _master    = cfg("master_idx")
-    master_idx = int(_master) if _master is not None else -1
-    target_idx, target_addr = _pick_target(master_idx, window)
+    target_idx, target_addr = _pick_target(window)
 
     if target_idx is None:
         _dlog({"type":"deposit_error","step":1,
@@ -243,17 +241,20 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
     ).start()
 
 
-def _pick_target(master_idx: int, window: str = "regular") -> tuple:
+def _pick_target(window: str = "regular") -> tuple:
     """
-    Target for deposit race allocation:
-      Priority 1: rot_active (ta=0, non-master) — immediate effect, capacity+slash checked
-      Priority 2: rot_slave (ta=1, non-master)  — active next epoch, no slash penalty
+    Target for deposit race allocation, scoped to ROTATION_PAIR=(2,3) by
+    architectural invariant (lib/config.py). Master pair is heal-managed and
+    must never receive deposit-race allocations.
+
+      Priority 1: rot_active (ta=0) — immediate effect, capacity+slash checked
+      Priority 2: rot_slave  (ta=1) — active next epoch, no slash penalty
+                  (only considered in rotation/snatch window)
       No target   → log and leave in pool (ta=2/inactive have no near-term effect)
 
     Uses cached assess + capacity — no wallet subprocess on hot path.
     """
     from .assess import _assess_state_cached, _fetch_capacity_cached, _max_topup_active
-    from .config import NODE_INDICES
     try:
         pw = ""
         try:
@@ -265,10 +266,8 @@ def _pick_target(master_idx: int, window: str = "regular") -> tuple:
         st    = _assess_state_cached(0, pw)   # cached, no subprocess
         nodes = st.get("by_idx", {})
 
-        # Priority 1: active non-master with headroom
-        for idx in NODE_INDICES:
-            if idx == master_idx:
-                continue
+        # Priority 1: active rotation node with headroom
+        for idx in ROTATION_PAIR:
             node = nodes.get(idx, {})
             if node.get("status") == "active":
                 try:
@@ -292,9 +291,7 @@ def _pick_target(master_idx: int, window: str = "regular") -> tuple:
         # In regular window ta=1 is skipped: stake would sit idle for up to 6h
         # and a competitor may have a better active target.
         if window in ("rotation", "snatch"):
-            for idx in NODE_INDICES:
-                if idx == master_idx:
-                    continue
+            for idx in ROTATION_PAIR:
                 node = nodes.get(idx, {})
                 if node.get("status") in ("maturing", "seeded") and node.get("ta") == 1:
                     addr = node.get("staking_address") or cfg(f"prov_{idx}_address") or ""
