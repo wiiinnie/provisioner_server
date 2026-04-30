@@ -50,7 +50,7 @@ import threading
 from collections import deque
 from datetime import datetime
 
-from .config import _log, cfg
+from .config import _log, cfg, MASTER_PAIR
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -61,9 +61,6 @@ BLOCK_GAP       = 1               # wait for block_accepted >= executed + GAP
                                   #   inclusion is executed + 2.
 STATE_FILE      = os.path.expanduser("~/.sozu_heal.json")
 HEAL_LOG_PATH   = os.path.expanduser("~/.sozu_heal.log")
-
-# Master pair — hardcoded. rotation.py excludes these from rot_indices.
-MASTER_PAIR     = (0, 1)
 
 # ── State constants ───────────────────────────────────────────────────────────
 IDLE        = "idle"
