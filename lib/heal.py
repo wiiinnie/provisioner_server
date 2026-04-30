@@ -402,16 +402,28 @@ def check_threshold_and_trigger(
         master_idx: int,
         master_stake_dusk: float,
         active_maximum_dusk: float,
-        pool_dusk: float,    # kept for API compatibility; heal uses freed stake, not pool
+        pool_dusk: float,
 ) -> bool:
     """
     Called from rotation's master-threshold branch.
     Returns True if heal is active (rotation should not duplicate alerts).
 
-    Formula:
-      rotation_floor     = max(1_000_000, active_max * 0.20)
-      target_master      = active_max - rotation_floor
-      threshold_dusk     = target_master * (master_threshold_pct / 100)
+    Operator-relative threshold (replaces the previous max-cap-anchored formula):
+
+      rotation_floor    = max(1_000_000, active_max * rot_floor_pct/100)
+      protocol_ceiling  = active_max - rotation_floor
+      operator_total    = sum(stake + locked + maturing + rewards) + pool
+      achievable_max    = operator_total - rotation_floor - SEED_DUSK
+      target_master     = min(protocol_ceiling, achievable_max)
+      threshold_dusk    = target_master * (master_heal_threshold_pct / 100)
+
+    The previous formula anchored to active_max alone, producing unreachable
+    targets when operator deposits were below the protocol cap. Heal would
+    redistribute available DUSK toward an unattainable target and re-trigger
+    every cycle. Now the threshold scales with what the operator actually has.
+
+    pool_dusk is now consumed (was previously a no-op param). The state dict
+    is fetched here from the cache (90s TTL) — caller doesn't need to pass it.
     """
     if not cfg("master_heal_enabled"):
         return False
@@ -420,8 +432,23 @@ def check_threshold_and_trigger(
     if state != IDLE and state != FAILED:
         return True   # already healing
 
-    rotation_floor = max(1_000_000.0, active_maximum_dusk * 0.20)
-    target_master  = max(0.0, active_maximum_dusk - rotation_floor)
+    # Operator-relative target computation
+    from .assess import _assess_state_cached, compute_operator_total
+    try:
+        assessed = _assess_state_cached(0, "")
+    except Exception as e:
+        _hlog_warn(f"threshold check: assess failed ({e}) — using empty state")
+        assessed = {"by_idx": {}}
+
+    breakdown      = compute_operator_total(assessed, pool_dusk)
+    operator_total = breakdown["total_dusk"]
+
+    rot_floor_pct    = float(cfg("rotation_floor_pct") or 20.0)
+    rotation_floor   = max(1_000_000.0, active_maximum_dusk * rot_floor_pct / 100.0)
+    protocol_ceiling = max(0.0, active_maximum_dusk - rotation_floor)
+    achievable_max   = max(0.0, operator_total - rotation_floor - SEED_DUSK)
+    target_master    = min(protocol_ceiling, achievable_max)
+
     # v2 uses master_heal_threshold_pct (new key). Fall back to old master_threshold_pct
     # for backward compatibility if new key is absent.
     threshold_pct  = float(cfg("master_heal_threshold_pct")
