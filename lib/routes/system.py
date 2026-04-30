@@ -92,7 +92,7 @@ def set_config():
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port")
     bool_keys  = ("sweeper_enabled",)
-    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct")
+    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct", "min_viable_master_dusk")
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
                   "node_0_log","node_1_log","node_2_log","node_3_log",

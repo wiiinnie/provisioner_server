@@ -459,6 +459,27 @@ def check_threshold_and_trigger(
     if master_stake_dusk >= threshold_dusk:
         return False
 
+    # ── Circuit breaker ───────────────────────────────────────────────────
+    # If target_master is below operator-configured minimum, refuse to trigger.
+    # Heal would still execute mechanically but produce a master with too
+    # little stake to be useful. Better to alert the operator that deposits
+    # are needed and stay in degraded-but-stable state.
+    min_viable = float(cfg("min_viable_master_dusk") or 0.0)
+    if min_viable > 0 and target_master < min_viable:
+        _hlog_warn(
+            f"heal NOT triggered: target_master {target_master:,.2f} DUSK "
+            f"< min_viable_master_dusk {min_viable:,.2f} DUSK "
+            f"(operator_total={operator_total:,.2f}). Deposit more to enable heal."
+        )
+        try:
+            from .telegram import alert_insufficient_operator_stake
+            alert_insufficient_operator_stake(
+                operator_total, target_master, min_viable, breakdown
+            )
+        except Exception as _tg_err:
+            _hlog_warn(f"tg alert_insufficient_operator_stake failed: {_tg_err}")
+        return False
+
     # Find standby — the other slot in {0, 1}
     standby_candidates = [i for i in MASTER_PAIR if i != master_idx]
     if not standby_candidates:
