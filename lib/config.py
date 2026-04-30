@@ -45,6 +45,15 @@ NETWORK         = os.environ.get("SOZU_NETWORK", "testnet")   # override via SOZ
 _NET            = f"-n {NETWORK}"
 RUSK_VERSION    = "1.5"
 NODE_INDICES    = [0, 1, 2, 3]
+
+# ── Architecture invariant: provisioner role split ───────────────────────
+# prov[0] and prov[1] are the master pair (heal-managed only).
+# prov[2] and prov[3] are the rotation pair (rotation-managed only).
+# These sets are disjoint and constant. Heal owns MASTER_PAIR, rotation
+# and deposit-race code owns ROTATION_PAIR. Mixing them produces the kind
+# of standby-leakage bug fixed in this branch.
+MASTER_PAIR     = (0, 1)
+ROTATION_PAIR   = (2, 3)
 PORT            = 7373
 
 # ── sozu-wallet config.toml reader ────────────────────────────────────────────
