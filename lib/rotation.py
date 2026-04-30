@@ -660,11 +660,28 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
             if master_idx >= 0:
                 # v2 heal: two-threshold model (alert + heal), both applied to
                 # target_master. Backward-compat: fall back to old master_threshold_pct.
+                # target_master is operator-relative (same formula as heal.py):
+                # bounded by both the protocol ceiling and what the operator's
+                # total redistributable stake can realistically support.
                 cap           = _fcc(_pw())
                 active_max    = cap.get("active_maximum", 0.0)
                 rot_floor_pct = float(cfg("rotation_floor_pct") or 20.0)
-                rotation_floor = active_max * rot_floor_pct / 100.0
-                target_master = max(0.0, active_max - rotation_floor)
+                rotation_floor = max(1_000_000.0, active_max * rot_floor_pct / 100.0)
+                protocol_ceiling = max(0.0, active_max - rotation_floor)
+
+                # Compute operator total for operator-relative scaling
+                from .assess import _assess_state_cached, compute_operator_total
+                from .pool   import _fast_alloc_pool
+                try:
+                    assessed = _assess_state_cached(0, "")
+                except Exception as _e:
+                    _rlog_warn(f"threshold: assess failed ({_e}) — using empty state")
+                    assessed = {"by_idx": {}}
+                breakdown      = compute_operator_total(assessed, _fast_alloc_pool())
+                operator_total = breakdown["total_dusk"]
+                SEED_DUSK_F    = 1000.0
+                achievable_max = max(0.0, operator_total - rotation_floor - SEED_DUSK_F)
+                target_master  = min(protocol_ceiling, achievable_max)
 
                 alert_pct = float(cfg("master_alert_threshold_pct")
                                   or cfg("master_threshold_pct")
