@@ -666,7 +666,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                 cap           = _fcc(_pw())
                 active_max    = cap.get("active_maximum", 0.0)
                 rot_floor_pct = float(cfg("rotation_floor_pct") or 20.0)
-                rotation_floor = max(1_000_000.0, active_max * rot_floor_pct / 100.0)
+                rotation_floor = active_max * rot_floor_pct / 100.0
                 protocol_ceiling = max(0.0, active_max - rotation_floor)
 
                 # Compute operator total for operator-relative scaling

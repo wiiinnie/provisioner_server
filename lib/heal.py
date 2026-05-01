@@ -410,7 +410,7 @@ def check_threshold_and_trigger(
 
     Operator-relative threshold (replaces the previous max-cap-anchored formula):
 
-      rotation_floor    = max(1_000_000, active_max * rot_floor_pct/100)
+      rotation_floor    = active_max * rot_floor_pct/100
       protocol_ceiling  = active_max - rotation_floor
       operator_total    = sum(stake + locked + maturing + rewards) + pool
       achievable_max    = operator_total - rotation_floor - SEED_DUSK
@@ -444,7 +444,7 @@ def check_threshold_and_trigger(
     operator_total = breakdown["total_dusk"]
 
     rot_floor_pct    = float(cfg("rotation_floor_pct") or 20.0)
-    rotation_floor   = max(1_000_000.0, active_maximum_dusk * rot_floor_pct / 100.0)
+    rotation_floor   = active_maximum_dusk * rot_floor_pct / 100.0
     protocol_ceiling = max(0.0, active_maximum_dusk - rotation_floor)
     achievable_max   = max(0.0, operator_total - rotation_floor - SEED_DUSK)
     target_master    = min(protocol_ceiling, achievable_max)

@@ -102,6 +102,18 @@ def set_config():
             current[k] = max(100000,int(data[k])) if k=="gas_limit" else int(data[k])
     for k in float_keys:
         if k in data: current[k] = float(data[k])
+
+    # ── Validate rotation_floor_pct: must be in [5, 50] range ────────────────
+    # Below 5%: rotation pair underfunded, can't earn meaningfully or rotate.
+    # Above 50%: master loses primacy, target_master would be smaller than
+    #            rotation pair's own allocation, breaking the threshold logic.
+    if "rotation_floor_pct" in current:
+        v = float(current["rotation_floor_pct"])
+        if v < 5.0 or v > 50.0:
+            return jsonify({
+                "ok": False,
+                "error": f"rotation_floor_pct must be between 5 and 50 (got {v})"
+            }), 400
     for k in bool_keys:
         if k in data: current[k] = bool(data[k])
     for k in str_keys:
