@@ -399,6 +399,67 @@ def _stake_headroom(cap: dict) -> float:
     return max(0.0, cap.get("locked_maximum", 0.0) - cap.get("locked_current", 0.0))
 
 
+def compute_operator_total(state: dict, pool_dusk: float = 0.0) -> dict:
+    """Sum the operator's redistributable DUSK across all provisioners + pool.
+
+    "Redistributable" means: DUSK that would return to the operator's pool if
+    all provisioners were liquidated + terminated. This includes:
+      - active stake     (returns on liquidate)
+      - locked stake     (returns on liquidate; locked is collateral, not slashed)
+      - maturing stake   (same value as active; the maturing label only affects
+                          when it becomes eligible, not the amount)
+      - rewards          (returns on terminate)
+      - pool balance     (not yet allocated)
+
+    Inactive provisioners contribute their locked/rewards but not stake_dusk
+    (which is < MIN_STAKE_DUSK noise for inactive nodes).
+
+    Used by heal.check_threshold_and_trigger to compute an operator-relative
+    target_master rather than anchoring the threshold to active_maximum, which
+    would produce unreachable targets when operator deposits are below the
+    protocol cap.
+
+    Returns a breakdown dict for telemetry/debug:
+      {
+        "total_dusk":     float,   # sum of all components below
+        "active_stake":   float,   # stake on all active provisioners
+        "maturing_stake": float,   # stake on all maturing/seeded provisioners
+        "locked":         float,   # sum of locked across all provisioners
+        "rewards":        float,   # sum of accumulated rewards
+        "pool":           float,   # current pool balance
+      }
+    """
+    nodes = state.get("by_idx", {}) if isinstance(state, dict) else {}
+
+    active_stake   = 0.0
+    maturing_stake = 0.0
+    locked         = 0.0
+    rewards        = 0.0
+
+    for n in nodes.values():
+        status = n.get("status", "inactive")
+        stake  = float(n.get("stake_dusk", 0.0) or 0.0)
+        if status == "active":
+            active_stake += stake
+        elif status in ("maturing", "seeded"):
+            maturing_stake += stake
+        # inactive: stake_dusk is < MIN_STAKE_DUSK noise, skip
+        locked  += float(n.get("locked_dusk", 0.0) or 0.0)
+        rewards += float(n.get("reward_dusk", 0.0) or 0.0)
+
+    pool  = float(pool_dusk or 0.0)
+    total = active_stake + maturing_stake + locked + rewards + pool
+
+    return {
+        "total_dusk":     round(total,          4),
+        "active_stake":   round(active_stake,   4),
+        "maturing_stake": round(maturing_stake, 4),
+        "locked":         round(locked,         4),
+        "rewards":        round(rewards,        4),
+        "pool":           round(pool,           4),
+    }
+
+
 # ── parse_stake_info (legacy text parser) ─────────────────────────────────────
 def parse_stake_info(output: str, current_tip: int = 0) -> dict:
     result = {

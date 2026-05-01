@@ -50,7 +50,7 @@ import threading
 from collections import deque
 from datetime import datetime
 
-from .config import _log, cfg
+from .config import _log, cfg, MASTER_PAIR
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -61,9 +61,6 @@ BLOCK_GAP       = 1               # wait for block_accepted >= executed + GAP
                                   #   inclusion is executed + 2.
 STATE_FILE      = os.path.expanduser("~/.sozu_heal.json")
 HEAL_LOG_PATH   = os.path.expanduser("~/.sozu_heal.log")
-
-# Master pair — hardcoded. rotation.py excludes these from rot_indices.
-MASTER_PAIR     = (0, 1)
 
 # ── State constants ───────────────────────────────────────────────────────────
 IDLE        = "idle"
@@ -405,16 +402,28 @@ def check_threshold_and_trigger(
         master_idx: int,
         master_stake_dusk: float,
         active_maximum_dusk: float,
-        pool_dusk: float,    # kept for API compatibility; heal uses freed stake, not pool
+        pool_dusk: float,
 ) -> bool:
     """
     Called from rotation's master-threshold branch.
     Returns True if heal is active (rotation should not duplicate alerts).
 
-    Formula:
-      rotation_floor     = max(1_000_000, active_max * 0.20)
-      target_master      = active_max - rotation_floor
-      threshold_dusk     = target_master * (master_threshold_pct / 100)
+    Operator-relative threshold (replaces the previous max-cap-anchored formula):
+
+      rotation_floor    = max(1_000_000, active_max * rot_floor_pct/100)
+      protocol_ceiling  = active_max - rotation_floor
+      operator_total    = sum(stake + locked + maturing + rewards) + pool
+      achievable_max    = operator_total - rotation_floor - SEED_DUSK
+      target_master     = min(protocol_ceiling, achievable_max)
+      threshold_dusk    = target_master * (master_heal_threshold_pct / 100)
+
+    The previous formula anchored to active_max alone, producing unreachable
+    targets when operator deposits were below the protocol cap. Heal would
+    redistribute available DUSK toward an unattainable target and re-trigger
+    every cycle. Now the threshold scales with what the operator actually has.
+
+    pool_dusk is now consumed (was previously a no-op param). The state dict
+    is fetched here from the cache (90s TTL) — caller doesn't need to pass it.
     """
     if not cfg("master_heal_enabled"):
         return False
@@ -423,8 +432,23 @@ def check_threshold_and_trigger(
     if state != IDLE and state != FAILED:
         return True   # already healing
 
-    rotation_floor = max(1_000_000.0, active_maximum_dusk * 0.20)
-    target_master  = max(0.0, active_maximum_dusk - rotation_floor)
+    # Operator-relative target computation
+    from .assess import _assess_state_cached, compute_operator_total
+    try:
+        assessed = _assess_state_cached(0, "")
+    except Exception as e:
+        _hlog_warn(f"threshold check: assess failed ({e}) — using empty state")
+        assessed = {"by_idx": {}}
+
+    breakdown      = compute_operator_total(assessed, pool_dusk)
+    operator_total = breakdown["total_dusk"]
+
+    rot_floor_pct    = float(cfg("rotation_floor_pct") or 20.0)
+    rotation_floor   = max(1_000_000.0, active_maximum_dusk * rot_floor_pct / 100.0)
+    protocol_ceiling = max(0.0, active_maximum_dusk - rotation_floor)
+    achievable_max   = max(0.0, operator_total - rotation_floor - SEED_DUSK)
+    target_master    = min(protocol_ceiling, achievable_max)
+
     # v2 uses master_heal_threshold_pct (new key). Fall back to old master_threshold_pct
     # for backward compatibility if new key is absent.
     threshold_pct  = float(cfg("master_heal_threshold_pct")
@@ -433,6 +457,27 @@ def check_threshold_and_trigger(
     threshold_dusk = target_master * (threshold_pct / 100.0)
 
     if master_stake_dusk >= threshold_dusk:
+        return False
+
+    # ── Circuit breaker ───────────────────────────────────────────────────
+    # If target_master is below operator-configured minimum, refuse to trigger.
+    # Heal would still execute mechanically but produce a master with too
+    # little stake to be useful. Better to alert the operator that deposits
+    # are needed and stay in degraded-but-stable state.
+    min_viable = float(cfg("min_viable_master_dusk") or 0.0)
+    if min_viable > 0 and target_master < min_viable:
+        _hlog_warn(
+            f"heal NOT triggered: target_master {target_master:,.2f} DUSK "
+            f"< min_viable_master_dusk {min_viable:,.2f} DUSK "
+            f"(operator_total={operator_total:,.2f}). Deposit more to enable heal."
+        )
+        try:
+            from .telegram import alert_insufficient_operator_stake
+            alert_insufficient_operator_stake(
+                operator_total, target_master, min_viable, breakdown
+            )
+        except Exception as _tg_err:
+            _hlog_warn(f"tg alert_insufficient_operator_stake failed: {_tg_err}")
         return False
 
     # Find standby — the other slot in {0, 1}

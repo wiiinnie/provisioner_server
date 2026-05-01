@@ -42,7 +42,7 @@ import time
 from collections import deque
 from datetime import datetime
 
-from .config import _log, cfg, _ROTATION_LOG_PATH
+from .config import _log, cfg, _ROTATION_LOG_PATH, ROTATION_PAIR
 
 SEED_DUSK    = 1000.0
 EPOCH_BLOCKS = 2160
@@ -276,22 +276,17 @@ def _master_idx() -> int:
     return int(v) if v is not None else -1
 
 
-def _master_indices() -> list[int]:
-    """Return all indices excluded from rotation (masters + standbys)."""
-    primary = _master_idx()
-    # prov0 = primary master, prov1 = standby master — both excluded from rotation
-    # Standbys are any configured index below the first rotation node (idx < 2)
-    excluded = set()
-    if primary >= 0:
-        excluded.add(primary)
-    excluded.add(1)  # prov1 always standby — never rotated
-    return sorted(excluded)
-
-
 def _rot_indices() -> list[int]:
-    from .config import NODE_INDICES
-    excl = set(_master_indices())
-    return [i for i in NODE_INDICES if i not in excl]
+    """Return the rotation pair indices.
+
+    The split between MASTER_PAIR=(0,1) and ROTATION_PAIR=(2,3) is an
+    architectural invariant defined in lib/config.py — it does NOT depend on
+    which of {0,1} is currently the active master. Heal owns MASTER_PAIR;
+    rotation and deposit-race code own ROTATION_PAIR. Mixing them caused the
+    standby-leakage bug where, with master_idx=1, the heal-managed standby
+    prov[0] could be picked up as a rotation candidate.
+    """
+    return list(ROTATION_PAIR)
 
 
 def _pw() -> str:
@@ -665,11 +660,28 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
             if master_idx >= 0:
                 # v2 heal: two-threshold model (alert + heal), both applied to
                 # target_master. Backward-compat: fall back to old master_threshold_pct.
+                # target_master is operator-relative (same formula as heal.py):
+                # bounded by both the protocol ceiling and what the operator's
+                # total redistributable stake can realistically support.
                 cap           = _fcc(_pw())
                 active_max    = cap.get("active_maximum", 0.0)
                 rot_floor_pct = float(cfg("rotation_floor_pct") or 20.0)
-                rotation_floor = active_max * rot_floor_pct / 100.0
-                target_master = max(0.0, active_max - rotation_floor)
+                rotation_floor = max(1_000_000.0, active_max * rot_floor_pct / 100.0)
+                protocol_ceiling = max(0.0, active_max - rotation_floor)
+
+                # Compute operator total for operator-relative scaling
+                from .assess import _assess_state_cached, compute_operator_total
+                from .pool   import _fast_alloc_pool
+                try:
+                    assessed = _assess_state_cached(0, "")
+                except Exception as _e:
+                    _rlog_warn(f"threshold: assess failed ({_e}) — using empty state")
+                    assessed = {"by_idx": {}}
+                breakdown      = compute_operator_total(assessed, _fast_alloc_pool())
+                operator_total = breakdown["total_dusk"]
+                SEED_DUSK_F    = 1000.0
+                achievable_max = max(0.0, operator_total - rotation_floor - SEED_DUSK_F)
+                target_master  = min(protocol_ceiling, achievable_max)
 
                 alert_pct = float(cfg("master_alert_threshold_pct")
                                   or cfg("master_threshold_pct")

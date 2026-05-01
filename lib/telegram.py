@@ -225,6 +225,36 @@ def alert_heal_failed(reason: str) -> None:
     send_async(msg, alert_key="heal_failed")
 
 
+def alert_insufficient_operator_stake(
+        operator_total: float,
+        target_master: float,
+        min_viable: float,
+        breakdown: dict,
+) -> None:
+    """Heal threshold tripped, but achievable target_master is below
+    min_viable_master_dusk. Operator needs to deposit more DUSK before heal
+    can produce a viable master.
+
+    Rate-limited to once per cooldown window via the standard alert_key
+    mechanism. Operator gets one alert per ~30min while the condition holds.
+    """
+    msg = (
+        f"⚠️ <b>SOZU — Heal Blocked: Insufficient Operator Stake</b>\n\n"
+        f"Master is below the heal threshold, but heal cannot produce a "
+        f"viable master with current operator deposits.\n\n"
+        f"<b>Operator total:</b> {operator_total:,.2f} DUSK\n"
+        f"  ↳ active stake:    {breakdown.get('active_stake', 0):,.2f}\n"
+        f"  ↳ maturing stake:  {breakdown.get('maturing_stake', 0):,.2f}\n"
+        f"  ↳ locked:          {breakdown.get('locked', 0):,.2f}\n"
+        f"  ↳ rewards:         {breakdown.get('rewards', 0):,.2f}\n"
+        f"  ↳ pool:            {breakdown.get('pool', 0):,.2f}\n\n"
+        f"<b>Achievable master:</b> {target_master:,.2f} DUSK\n"
+        f"<b>Required minimum:</b> {min_viable:,.2f} DUSK\n\n"
+        f"<b>Action:</b> deposit additional DUSK to enable heal."
+    )
+    send_async(msg, alert_key="insufficient_operator_stake")
+
+
 def alert_rotation_failed(reason: str) -> None:
     """Send rotation failure alert."""
     msg = (
