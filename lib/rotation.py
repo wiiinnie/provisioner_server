@@ -606,26 +606,22 @@ def _sync_locked_max_pct(cur_epoch: int) -> None:
 
     try:
         _config_mod._cfg["locked_max_pct"] = observed_pct
-        _config_mod._save_config()
+        _config_mod._save_config(_config_mod._cfg)
     except Exception as e:
         _rlog_warn(f"locked_max_pct sync: _save_config failed: {e}")
 
-    # TG alert (best-effort, multiple shapes supported)
+    # TG alert (best-effort)
     try:
-        try:
-            from .telegram import alert_locked_max_pct_drift  # type: ignore
-            alert_locked_max_pct_drift(configured_pct, observed_pct,
-                                       locked_max, active_max)
-        except ImportError:
-            from .telegram import send_telegram_message  # type: ignore
-            send_telegram_message(
-                f"⚠️ <b>Slash-cap drift detected</b>\n\n"
-                f"Chain reports <code>{observed_pct}%</code> "
-                f"(locked_max={locked_max:,.0f} / "
-                f"active_max={active_max:,.0f} DUSK)\n"
-                f"Previous config: <code>{configured_pct}%</code>\n\n"
-                f"Config auto-updated. Chain protocol param has changed."
-            )
+        from .telegram import send_async
+        send_async(
+            f"\u26a0\ufe0f <b>Slash-cap drift detected</b>\n\n"
+            f"Chain reports <code>{observed_pct}%</code> "
+            f"(locked_max={locked_max:,.0f} / "
+            f"active_max={active_max:,.0f} DUSK)\n"
+            f"Previous config: <code>{configured_pct}%</code>\n\n"
+            f"Config auto-updated. Chain protocol param has changed.",
+            alert_key="locked_max_pct_drift",
+        )
     except Exception as e:
         _rlog_warn(f"locked_max_pct sync: TG alert failed: {e}")
 
