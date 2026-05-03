@@ -410,7 +410,13 @@ def on_block(block_height: int) -> None:
             cand_block = _rotation_state["sweeper_candidate_block"]
             cand_dusk  = _rotation_state["sweeper_candidate_dusk"]
         _sweeper_on = bool(cfg("sweeper_enabled"))
-        if _sweeper_on and cand_block > 0 and block_height - cand_block >= STATE_CHECK_BLOCKS:
+        # Configurable delay between detection and allocation. Floor at
+        # STATE_CHECK_BLOCKS — sub-cadence values would be silently rounded
+        # up to the next state check anyway. Default 50 blocks ~ 500s on
+        # Dusk's 10s blocktime; realistic latency 50–60 blocks.
+        _sweeper_delay_blocks_cfg = max(STATE_CHECK_BLOCKS,
+                                         int(cfg("sweeper_delay_blocks") or 50))
+        if _sweeper_on and cand_block > 0 and block_height - cand_block >= _sweeper_delay_blocks_cfg:
             threading.Thread(target=_run_sweeper,
                              args=(cand_dusk, delta_snapshot, blk_left), daemon=True).start()
             with _state_lock:

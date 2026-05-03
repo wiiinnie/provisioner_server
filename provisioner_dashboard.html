@@ -1785,6 +1785,8 @@ async function loadConfig() {
     document.getElementById('cfg-gas-price').value     = _cfg.gas_price ?? 1
     const swEl = document.getElementById('cfg-sweeper-enabled')
     if (swEl) swEl.checked = !!_cfg.sweeper_enabled
+    const swDelayEl = document.getElementById('cfg-sweeper-delay-blocks')
+    if (swDelayEl) swDelayEl.value = _cfg.sweeper_delay_blocks ?? 50
     // Rotation config fields
     document.getElementById('cfg-prov-0-address').value = _cfg.prov_0_address || ''
     document.getElementById('cfg-prov-1-address').value = _cfg.prov_1_address || ''
@@ -1842,6 +1844,7 @@ async function saveConfig() {
     gas_limit:            parseInt(document.getElementById('cfg-gas-limit').value || '2000000'),
     gas_price:            parseInt(document.getElementById('cfg-gas-price').value || '1'),
     sweeper_enabled:      !!(document.getElementById('cfg-sweeper-enabled')?.checked),
+    sweeper_delay_blocks: parseInt(document.getElementById('cfg-sweeper-delay-blocks')?.value || '50'),
     telegram_bot_token:   document.getElementById('cfg-telegram-token').value.trim(),
   }
   // Restart prompt if node_state_url changed
@@ -3386,6 +3389,9 @@ setInterval(() => {
         <input type="checkbox" id="cfg-sweeper-enabled" style="width:14px;height:14px;accent-color:var(--teal);">
         <span style="font-size:11px;color:var(--dim);">enable sweeper</span>
       </label>
+
+      <label style="font-size:11px;color:var(--muted);">Sweeper Delay (blocks)<br><span style="font-size:10px;color:var(--dim)">wait this many blocks after candidate detection before allocating (default 50, ~500s on Dusk's 10s blocktime). Range 10–500.</span></label>
+      <input class="modal-input" id="cfg-sweeper-delay-blocks" type="number" step="10" min="10" max="500" style="margin:0;" placeholder="50">
     </div>
 
     <div id="cfg-status" style="font-size:11px;color:var(--green);min-height:18px;margin-top:10px;"></div>
