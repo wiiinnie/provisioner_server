@@ -159,6 +159,8 @@ _CONFIG_DEFAULTS = {
     "snatch_min_deposit_dusk": 100.0,
     "gas_limit":               2000000,
     "gas_price":               1,
+    "sweeper_enabled":         False,
+    "sweeper_delay_blocks":    50,
 }
 
 _cfg: dict       = {}
