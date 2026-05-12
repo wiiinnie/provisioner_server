@@ -7,3 +7,4 @@ gunicorn.ctl
 *.bak-*
 patch_*.py
 
+backups/
