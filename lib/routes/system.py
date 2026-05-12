@@ -92,7 +92,7 @@ def set_config():
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port",
                   "sweeper_delay_blocks")
-    bool_keys  = ("sweeper_enabled",)
+    bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause]
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct", "min_viable_master_dusk")
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
@@ -280,6 +280,26 @@ def deposit_log_clear():
 def race_counters():
     from ..events import get_race_counters
     return jsonify(get_race_counters())
+
+
+# [deposit_race_pause] pause endpoint
+@bp.route("/api/events/deposit_race/pause", methods=["POST"])
+def deposit_race_pause():
+    """Toggle or set the deposit_race_paused config flag.
+    Body: {"paused": true|false}  (optional — omit to toggle)
+    Returns: {"ok": true, "paused": <new_state>}
+    """
+    from ..config import _cfg as _current_cfg
+    data = request.get_json(silent=True) or {}
+    current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
+    if "paused" in data:
+        new_state = bool(data["paused"])
+    else:
+        new_state = not bool(current.get("deposit_race_paused", False))
+    current["deposit_race_paused"] = new_state
+    _save_config(current)
+    _log(f"[deposit-race] {'paused' if new_state else 'resumed'} by user")
+    return jsonify({"ok": True, "paused": new_state})
 
 
 

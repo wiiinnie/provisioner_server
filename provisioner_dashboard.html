@@ -582,6 +582,10 @@
         <span id="race-wins"   style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--green);">W0</span>
         <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--border);">/</span>
         <span id="race-losses" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);">L0</span>
+        <!-- [deposit_race_pause] pause button -->
+        <button id="deposit-race-pause-btn" onclick="_toggleDepositRacePause()"
+          style="background:none;border:none;color:var(--dim);font-size:9px;cursor:pointer;font-family:'IBM Plex Mono',monospace;"
+          title="pause deposit race allocation — incoming deposits stay in pool">⏸ pause</button>
         <button onclick="_clearDepositLog()"
           style="background:none;border:none;color:var(--dim);font-size:9px;cursor:pointer;font-family:'IBM Plex Mono',monospace;">clear</button>
       </div>
@@ -2337,6 +2341,30 @@ let _lastDepLogLen = 0
 
 
 
+// [deposit_race_pause] toggle fn
+async function _toggleDepositRacePause() {
+  try {
+    const r = await fetch(`${API}/api/events/deposit_race/pause`, {method: 'POST'})
+    const d = await r.json()
+    if (d.ok) _applyDepositRacePauseUI(d.paused)
+    await _pollDepositLog()
+  } catch(e) { console.error('toggle deposit-race pause:', e) }
+}
+
+function _applyDepositRacePauseUI(paused) {
+  const btn = document.getElementById('deposit-race-pause-btn')
+  const sec = document.getElementById('deposit-log-section')
+  if (btn) {
+    btn.textContent = paused ? '▶ resume' : '⏸ pause'
+    btn.style.color = paused ? 'var(--yellow)' : 'var(--dim)'
+    btn.style.fontWeight = paused ? '600' : '400'
+  }
+  if (sec) {
+    sec.style.borderTop = paused ? '1px solid var(--yellow)' : '1px solid var(--border)'
+    sec.style.boxShadow = paused ? 'inset 0 1px 0 rgba(230,184,74,.15)' : ''
+  }
+}
+
 async function _clearDepositLog() {
   try {
     await fetch(`${API}/api/events/deposit_log/clear`, {method: 'POST'})
@@ -2355,6 +2383,8 @@ async function _pollDepositLog() {
     const lEl = document.getElementById('race-losses')
     if (wEl && race) wEl.textContent = `W${race.wins}`
     if (lEl && race) lEl.textContent = `L${race.losses}`
+    // [deposit_race_pause] poll paused
+    if (race && 'paused' in race) _applyDepositRacePauseUI(!!race.paused)
 
     if (!entries || !entries.length) return
     const dot = document.getElementById('deposit-log-dot')

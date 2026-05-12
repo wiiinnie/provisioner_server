@@ -82,8 +82,13 @@ def get_deposit_log() -> list:
 
 
 def get_race_counters() -> dict:
+    # [deposit_race_pause] counter response
     with _race_lock:
-        return {"wins": _race_wins, "losses": _race_losses}
+        return {
+            "wins":   _race_wins,
+            "losses": _race_losses,
+            "paused": bool(cfg("deposit_race_paused")),
+        }
 
 
 def _now_ts() -> str:
@@ -190,6 +195,18 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
             return
     except Exception:
         pass
+
+    # [deposit_race_pause] pause check
+    # Manual pause toggle from dashboard. When set, deposits are logged
+    # and skipped; W/L counters are NOT updated. Resume toggles back.
+    if cfg("deposit_race_paused"):
+        _amount_lux  = int(str(decoded.get("amount") or decoded.get("value") or 0))
+        _amount_dusk = _amount_lux / 1e9
+        _window      = _current_window(block_height)
+        _dlog({"type":"deposit_skipped", "step":0,
+               "msg":f"⏸ deposit race PAUSED — {label} {_amount_dusk:,.4f} DUSK ({_window}) stays in pool",
+               "amount":_amount_dusk, "window":_window, "ok":False})
+        return
 
     window         = _current_window(block_height)
     min_dep        = float(cfg("min_deposit_dusk")        or 100.0)

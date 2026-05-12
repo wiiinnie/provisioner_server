@@ -1055,20 +1055,56 @@ def _seed_node(idx: int, amount_dusk: float, reason: str, nodes: dict = None) ->
             _set_state(ROTATING); return
 
         # Pre-reset: if node has residual rewards, liquidate+terminate to clean state
+        # ── [n2_gap_hotfix] full tx_confirm + n+2 block gap (was unconfirmed before) ──
         reward_dusk = (nodes or {}).get(idx, {}).get("reward_dusk", 0.0) if nodes else 0.0
         if reward_dusk > 0:
             _rlog_step(f"seed prov[{idx}]: residual reward {reward_dusk:.4f} DUSK detected — "
                        f"liquidate+terminate to reset before seeding")
+            from .rues import (
+                register_tx_confirm as _rtc_pre,
+                get_tx_confirm_result as _gtcr_pre,
+                wait_for_block as _wait_pre,
+            )
+
+            # ── Pre-reset liquidate (with confirmation) ────────────────────────
+            _liq_evt_pre = _rtc_pre("liquidate", addr)
             r_liq = _cmd(f"pool liquidate --skip-confirmation --provisioner {addr}")
             if not r_liq.get("ok"):
                 err = r_liq.get("stderr", "")[:300]
-                if not any(x in err.lower() for x in ("no stake", "nothing to liquidate", "does not exist")):
+                if any(x in err.lower() for x in ("no stake", "nothing to liquidate", "does not exist")):
+                    _rlog_warn(f"seed prov[{idx}]: pre-liquidate: already empty — proceeding")
+                    _liq_evt_pre.set()
+                else:
                     _rlog_err(f"seed prov[{idx}]: pre-liquidate failed: {err}")
                     _set_state(ROTATING); return
-                # Already empty — fine, continue to terminate
+            else:
+                _rlog_info(f"seed prov[{idx}]: pre-liquidate tx sent — waiting for confirmation (120s)…")
+            if not _liq_evt_pre.wait(timeout=120):
+                _rlog_err(f"seed prov[{idx}]: pre-liquidate confirmation timeout — aborting")
+                _set_state(ROTATING); return
+
+            # n+2 block gap before terminate
+            _liq_res_pre   = _gtcr_pre("liquidate", addr)
+            _liq_block_pre = (_liq_res_pre or {}).get("block_height", 0)
+            if _liq_block_pre:
+                _target_pre = _liq_block_pre + 1
+                _rlog_step(f"  ↳ pre-liquidate executed at block {_liq_block_pre}; "
+                           f"waiting for block {_target_pre} (n+2 safety)")
+                if not _wait_pre(_target_pre, timeout=60):
+                    _rlog_warn(f"  ↳ block-gap wait timeout — proceeding anyway")
+            else:
+                _rlog_warn(f"  ↳ no block_height in pre-liquidate result — falling back to 22s sleep")
+                import time as _time_pre; _time_pre.sleep(22)
+
+            # ── Pre-reset terminate (with confirmation) ────────────────────────
+            _term_evt_pre = _rtc_pre("terminate", addr)
             r_term = _cmd(f"pool terminate --skip-confirmation --provisioner {addr}")
             if not r_term.get("ok"):
                 _rlog_err(f"seed prov[{idx}]: pre-terminate failed: {r_term.get('stderr','')[:300]}")
+                _set_state(ROTATING); return
+            _rlog_info(f"seed prov[{idx}]: pre-terminate tx sent — waiting for confirmation (120s)…")
+            if not _term_evt_pre.wait(timeout=120):
+                _rlog_err(f"seed prov[{idx}]: pre-terminate confirmation timeout — aborting")
                 _set_state(ROTATING); return
             _rlog_ok(f"seed prov[{idx}]: provisioner reset — proceeding with seed")
 
@@ -1191,6 +1227,20 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
         _rlog_err(f"[1/3] liquidate REVERTED on-chain: {str(_liq_err)[:200]} — aborting A:2 recovery")
         _set_state(ROTATING); _bump_epoch(cur_epoch); return
     _rlog_ok(f"[1/3] liquidate confirmed — {stake_dusk + locked_dusk:.4f} DUSK freed to pool")
+
+    # ── [n2_gap_hotfix] n+2 block gap before terminate ──────────────
+    # Wait until block_accepted >= executed_block + 1 so terminate cannot be
+    # included earlier than executed_block + 2 (contract requirement).
+    _liq_block_a2 = (_liq_res or {}).get("block_height", 0)
+    if _liq_block_a2:
+        from .rues import wait_for_block as _wait_for_block_a2
+        _target_a2 = _liq_block_a2 + 1
+        _rlog_step(f"  ↳ liquidate executed at block {_liq_block_a2}; waiting for block {_target_a2} (n+2 safety)")
+        if not _wait_for_block_a2(_target_a2, timeout=60):
+            _rlog_warn(f"  ↳ block-gap wait timeout (target {_target_a2}) — proceeding anyway")
+    else:
+        _rlog_warn("  ↳ no block_height in liquidate result — falling back to 22s sleep")
+        import time as _time_a2; _time_a2.sleep(22)
 
     # ── Step 2: terminate ─────────────────────────────────────────────────────
     _rlog_step(f"[2/3] terminate prov[{smaller_idx}] (free rewards)")
@@ -1353,6 +1403,20 @@ def _run_rotation(cur_epoch: int) -> None:
             _rlog_err(f"[1/4] liquidate REVERTED on-chain: {str(_liq_err)[:200]} — aborting rotation")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[1/4] liquidate confirmed — {freed_by_liquidate:.4f} DUSK freed to pool")
+
+        # ── [n2_gap_hotfix] n+2 block gap before terminate ───────────
+        # Wait until block_accepted >= executed_block + 1 so terminate cannot
+        # be included earlier than executed_block + 2 (contract requirement).
+        _liq_block = (_liq_res or {}).get("block_height", 0)
+        if _liq_block:
+            from .rues import wait_for_block as _wait_for_block
+            _target = _liq_block + 1
+            _rlog_step(f"  ↳ liquidate executed at block {_liq_block}; waiting for block {_target} (n+2 safety)")
+            if not _wait_for_block(_target, timeout=60):
+                _rlog_warn(f"  ↳ block-gap wait timeout (target {_target}) — proceeding anyway")
+        else:
+            _rlog_warn("  ↳ no block_height in liquidate result — falling back to 22s sleep")
+            import time as _time; _time.sleep(22)
 
         # ── Step 2: terminate ─────────────────────────────────────────────────
         _rlog_step(f"[2/4] terminate prov[{rot_active_idx}] (free rewards)")

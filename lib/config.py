@@ -157,6 +157,7 @@ _CONFIG_DEFAULTS = {
     "telegram_chat_id":        "",
     "min_deposit_dusk":        100.0,
     "snatch_min_deposit_dusk": 100.0,
+    "deposit_race_paused":     False,    # [deposit_race_pause]
     "gas_limit":               2000000,
     "gas_price":               1,
     "sweeper_enabled":         False,
