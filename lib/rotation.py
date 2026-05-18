@@ -272,8 +272,72 @@ def seed_if_needed(amount_dusk: float, source: str) -> bool:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _master_idx() -> int:
-    v = cfg("master_idx")
-    return int(v) if v is not None else -1
+    """Return the master_pair member currently active on-chain.
+
+    [master_idx_dynamic] Auto-correcting getter.
+
+    Reads cfg("master_idx") as a cached hint. Cross-checks against
+    assess._stake_cache (real on-chain state). If the stored hint
+    disagrees with reality, auto-corrects cfg and logs the correction.
+
+    Resolution rules:
+      - Exactly one MASTER_PAIR member has status=="active" → return it
+        (auto-correct cfg if stored hint disagreed)
+      - Both active (anomalous) → return the one with more stake_dusk
+        (auto-correct cfg)
+      - Neither active (mid-heal, transition states) → return stored hint
+      - _stake_cache empty (dashboard just booted, no fetch yet) → stored hint
+
+    The cfg["master_idx"] field is treated as a cache; the source of truth
+    is the chain. This guards against drift from any code path that
+    changes role state outside the heal flow (rotation events, manual
+    operations, slashing, terminate-without-heal, etc.).
+    """
+    stored = cfg("master_idx")
+    try:
+        stored = int(stored) if stored is not None else -1
+    except Exception:
+        stored = -1
+
+    # Read fresh state from assess.py's stake cache (no network call —
+    # the cache is updated whenever _assess_state() runs, every ~90s).
+    try:
+        from .assess import _stake_cache, _stake_cache_lock
+        from .config import MASTER_PAIR
+        with _stake_cache_lock:
+            active_members = [
+                (i, _stake_cache.get(i, {}).get("stake_dusk", 0.0))
+                for i in MASTER_PAIR
+                if _stake_cache.get(i, {}).get("status") == "active"
+            ]
+    except Exception:
+        # Cache import or read failed — trust the stored hint
+        return stored
+
+    if len(active_members) == 1:
+        actual = active_members[0][0]
+    elif len(active_members) == 2:
+        # Both active (rare / anomalous) — master is the one with more stake
+        actual = max(active_members, key=lambda t: t[1])[0]
+    else:
+        # Neither active (mid-heal or transition) — trust the stored hint
+        return stored
+
+    # Drift detected — auto-correct the cached hint
+    if stored != actual:
+        try:
+            from .config import _cfg, _save_config, _log
+            _cfg["master_idx"] = actual
+            try:
+                _save_config(_cfg)
+            except Exception:
+                pass
+            _log(f"[master-idx] auto-corrected stale value: {stored} → {actual} "
+                 f"(prov{actual} is the actually-active master in MASTER_PAIR)")
+        except Exception:
+            pass
+
+    return actual
 
 
 def _rot_indices() -> list[int]:
