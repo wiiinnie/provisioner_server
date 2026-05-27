@@ -1546,7 +1546,7 @@ function updateLivePanel(data) {
     const rotWin    = (_cfg && _cfg.rotation_window) ? parseInt(_cfg.rotation_window) : 41
     const snatchWin = (_cfg && _cfg.snatch_window)   ? parseInt(_cfg.snatch_window)   : 11
     _renderEpochMonitor(data.epoch, blk, rotWin, snatchWin)
-    if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 5px var(--green)' }
+    // [rues_ui_fix] removed stray `if (dot)` — `dot` not declared in this scope
   }
   const nodes     = data.nodes || {}
   const sync      = data.sync  || {}
@@ -1687,7 +1687,7 @@ async function fetchLivePanel() {
     d.sync = sync.nodes || {}
     updateLivePanel(d)
   } catch(e) {
-    if (dot) { dot.style.background = 'var(--red)'; dot.style.boxShadow = 'none' }
+    // [rues_ui_fix] removed stray `if (dot)` — `dot` not declared in this scope
   }
 }
 
@@ -2497,6 +2497,9 @@ const _SEG_TO_KEY = {
   'executed':   'tx/executed',
 }
 let _ruesMineOnly   = false
+// [rues_ui_fix] missing state vars — fixes _pollRues ReferenceError
+let _ruesPaused    = false
+let _ruesActiveTab = 'events'
 const _ruesExpanded = new Map()
 
 function _ruesToggleExpand(key) {
@@ -2870,8 +2873,9 @@ async function _pollRues() {
     }
 
   } catch(e) {
+    console.error('[_pollRues caught]', e && e.message, e && e.stack);
     const dot = document.getElementById('rues-conn-dot')
-    if (dot) { dot.style.background = 'var(--red)'; dot.style.boxShadow = 'none' }
+    if (dot) { dot.style.background = 'var(--red)'; dot.style.boxShadow = 'none'; dot.title = 'JS error: ' + (e && e.message); }
   }
 }
 

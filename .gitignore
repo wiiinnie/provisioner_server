@@ -8,3 +8,8 @@ gunicorn.ctl
 patch_*.py
 
 backups/
+
+# Fix/patcher scripts — not part of the repo
+apply_*.py
+# Patcher backup directories
+backups/

@@ -2,7 +2,17 @@
 set -e
 
 #############################################
-# Multi-Instance Dusk Node Installer (v2)
+# Multi-Instance Dusk Node Installer (v3)
+#
+# Fixes from v2 (compatibility with rusk 1.7.0-rc.1 / installer 0.5.19):
+#   A. VERSIONS bumped: mainnet 1.6.0 → 1.6.1, testnet 1.7.0-rc.0 → 1.7.0-rc.1.
+#   B. Genesis fetch bug: the v2 fallback URL was {network}_genesis.toml which
+#      404s — the upstream filename is {network}.genesis (dot, not underscore).
+#      v3 copies it from the already-extracted installer tarball instead of
+#      hitting the network a second time.
+#   C. RUSK_CONSENSUS_SPIN_TIME=1779886800 is now injected into the systemd
+#      unit when --network testnet. Mirrors the upstream installer behaviour
+#      added for the 2026-05-27 13:00 UTC testnet spin.
 #
 # Fixes from v1 (node_installer_multi.sh):
 #   1. NETWORK env var properly threaded — no hardcoded mainnet anywhere.
@@ -60,7 +70,7 @@ NC='\033[0m'
 
 show_help() {
     cat << EOF
-Multi-Instance Dusk Node Installer (v2)
+Multi-Instance Dusk Node Installer (v3)
 
 Usage: $0 [OPTIONS]
 
@@ -90,11 +100,12 @@ OPTIONS:
                            the installer auto-detects via curl ifconfig.me.
 
     --rusk-version VER     Override the per-network pinned rusk version.
-                           Default mapping (mirrors dusk-network/node-installer):
-                             mainnet → 1.6.0
-                             testnet → 1.7.0-rc.0
-                             devnet  → 1.7.0-rc.0
-                           Example: --rusk-version 1.7.0
+                           Default mapping (mirrors dusk-network/node-installer
+                           release 0.5.19, 2026-05-26):
+                             mainnet → 1.6.1
+                             testnet → 1.7.0-rc.1
+                             devnet  → 1.7.0-rc.1
+                           Example: --rusk-version 1.7.0-rc.1
 
     -h, --help             Show this help
 
@@ -189,7 +200,7 @@ fi
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Multi-Instance Dusk Node Installer (v2)${NC}"
+echo -e "${GREEN}Multi-Instance Dusk Node Installer (v3)${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
 echo -e "Instance:           ${YELLOW}${INSTANCE}${NC}"
@@ -273,12 +284,13 @@ if [ "$SKIP_BINARY_DOWNLOAD" = false ]; then
     fi
 
     # ── Per-network rusk version (mirrors dusk-network/node-installer's VERSIONS map) ──
+    # Last synced: upstream release 0.5.19 (2026-05-26).
     # Update these when a new dusk release is published.
     # Override at runtime with --rusk-version.
     declare -A NETWORK_RUSK_VERSION=(
-        [mainnet]="1.6.0"
-        [testnet]="1.7.0-rc.0"
-        [devnet]="1.7.0-rc.0"
+        [mainnet]="1.6.1"
+        [testnet]="1.7.0-rc.1"
+        [devnet]="1.7.0-rc.1"
     )
 
     if [ -n "$RUSK_VERSION_OVERRIDE" ]; then
@@ -344,13 +356,20 @@ if [ "$SKIP_BINARY_DOWNLOAD" = false ]; then
     curl -sL "$CONFIG_URL" -o "${DUSK_ROOT}/conf/rusk.toml" \
         || { echo -e "${RED}Failed to download ${NETWORK} config${NC}"; exit 1; }
 
-    # genesis.toml — for some networks this comes via the OS script's
-    # install_deps; for others we need to fetch it separately. Verify exists:
-    if [ ! -f "${DUSK_ROOT}/conf/genesis.toml" ]; then
-        # Try downloading from the same path
-        GENESIS_URL="https://raw.githubusercontent.com/dusk-network/node-installer/main/conf/${NETWORK}_genesis.toml"
-        curl -sL "$GENESIS_URL" -o "${DUSK_ROOT}/conf/genesis.toml" \
-            || echo -e "${YELLOW}Warning: ${DUSK_ROOT}/conf/genesis.toml not found and no fallback URL — recovery may fail${NC}"
+    # genesis.toml — upstream keeps this in the node-installer repo as
+    # {network}.genesis (e.g. testnet.genesis). The installer tarball we
+    # already extracted to ${DUSK_ROOT}/installer/ contains it; just copy.
+    GENESIS_SRC="${DUSK_ROOT}/installer/conf/${NETWORK}.genesis"
+    if [ -f "$GENESIS_SRC" ]; then
+        cp -f "$GENESIS_SRC" "${DUSK_ROOT}/conf/genesis.toml"
+        echo -e "${GREEN}Copied ${NETWORK}.genesis → ${DUSK_ROOT}/conf/genesis.toml${NC}"
+    else
+        # Network fallback — using the CORRECT upstream filename (dot, not underscore).
+        # v2 used "${NETWORK}_genesis.toml" which 404s.
+        GENESIS_URL="https://raw.githubusercontent.com/dusk-network/node-installer/main/conf/${NETWORK}.genesis"
+        echo -e "${YELLOW}${GENESIS_SRC} missing — falling back to ${GENESIS_URL}${NC}"
+        curl -fsL "$GENESIS_URL" -o "${DUSK_ROOT}/conf/genesis.toml" \
+            || echo -e "${RED}Warning: failed to fetch genesis.toml — recovery WILL fail on first start${NC}"
     fi
 fi  # end SKIP_BINARY_DOWNLOAD guard
 
@@ -416,6 +435,18 @@ fi
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 echo -e "${GREEN}Writing systemd unit ${UNIT_FILE}…${NC}"
 
+# Testnet consensus spin time. Mirrors upstream node-installer 0.5.19 behavior:
+# the upstream installer injects RUSK_CONSENSUS_SPIN_TIME after RUSK_RECOVERY_INPUT
+# for testnet only. Required for rusk 1.7.0-rc.1+ on the new testnet (2026-05-27 spin).
+# Current value: 1779886800 = 2026-05-27T13:00:00Z. Override with TESTNET_SPIN_TIME env.
+TESTNET_CONSENSUS_SPIN_TIME="${TESTNET_SPIN_TIME:-1779886800}"
+
+SPIN_TIME_LINE=""
+if [ "$NETWORK" = "testnet" ]; then
+    SPIN_TIME_LINE="Environment=\"RUSK_CONSENSUS_SPIN_TIME=${TESTNET_CONSENSUS_SPIN_TIME}\""
+    echo -e "${BLUE}Injecting RUSK_CONSENSUS_SPIN_TIME=${TESTNET_CONSENSUS_SPIN_TIME} (testnet)${NC}"
+fi
+
 write_unit() {
     cat > "$UNIT_FILE" << EOF
 [Unit]
@@ -432,6 +463,7 @@ Environment="RUST_BACKTRACE=full"
 Environment="NETWORK=${NETWORK}"
 Environment="RUSK_PROFILE_PATH=${DUSK_ROOT}/rusk"
 Environment="RUSK_RECOVERY_INPUT=${DUSK_ROOT}/conf/genesis.toml"
+${SPIN_TIME_LINE}
 
 EnvironmentFile=-${SHARED_DUSK_CONF}
 EnvironmentFile=-${DUSK_ROOT}/services/rusk.conf.user
@@ -461,7 +493,9 @@ verify_unit() {
     grep -q "RUSK_PROFILE_PATH=${DUSK_ROOT}/rusk"            "$UNIT_FILE" \
     && grep -q "NETWORK=${NETWORK}"                          "$UNIT_FILE" \
     && grep -q "EnvironmentFile=-${SHARED_DUSK_CONF}"        "$UNIT_FILE" \
-    && grep -q "ExecStart=${DUSK_ROOT}/bin/rusk"             "$UNIT_FILE"
+    && grep -q "ExecStart=${DUSK_ROOT}/bin/rusk"             "$UNIT_FILE" \
+    && { [ "$NETWORK" != "testnet" ] \
+         || grep -q "RUSK_CONSENSUS_SPIN_TIME=${TESTNET_CONSENSUS_SPIN_TIME}" "$UNIT_FILE"; }
 }
 
 if ! verify_unit; then
@@ -586,7 +620,7 @@ echo "4. Watch the log:"
 echo "   tail -f ${LOG_FILE}"
 echo
 echo "5. Verify HTTP is reachable:"
-echo "   curl http://127.0.0.1:${HTTP_PORT}/on/node/info -H 'rusk-version: 1.6.0'"
+echo "   curl http://127.0.0.1:${HTTP_PORT}/on/node/info -H \"rusk-version: \${VERSION:-1.6.1}\""
 echo "   # (or from another host: curl http://${PUBLIC_IP}:${HTTP_PORT}/...)"
 echo
 if [ "$DOWNLOAD_STATE" = false ] && [ "$REGEN_STATE" = false ]; then
