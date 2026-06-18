@@ -17,7 +17,8 @@ from ..wallet import run_cmd, wallet_cmd, get_password, _cache_wallet_pw, OPERAT
 
 bp = Blueprint("system", __name__)
 
-SERVER_VERSION = "2.0.0"
+# [version_dynamic] SERVER_VERSION constant retired — version comes from git
+# metadata via the /api/version endpoint below.
 
 
 @bp.route("/api/ping")
@@ -53,8 +54,26 @@ def status():
 
 @bp.route("/api/version")
 def api_version():
+    # [version_dynamic] read git metadata at request time
+    import subprocess
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _git(args, fallback="unknown"):
+        try:
+            r = subprocess.run(
+                ["git"] + args,
+                cwd=_repo_root,
+                capture_output=True, text=True, timeout=2,
+            )
+            return r.stdout.strip() or fallback
+        except Exception:
+            return fallback
+
     return jsonify({
-        "version":  SERVER_VERSION,
+        "branch":   _git(["rev-parse", "--abbrev-ref", "HEAD"], fallback="main"),
+        "sha":      _git(["rev-parse", "--short", "HEAD"]),
+        "date":     _git(["log", "-1", "--format=%cd", "--date=format:%Y-%m-%d"]),
+        "dirty":    bool(_git(["status", "--porcelain"], fallback="")),
         "network":  NETWORK,
         "node_url": _NODE_STATE_URL,
         "pool":     CONTRACT_ID,

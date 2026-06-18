@@ -498,7 +498,8 @@
 </div>
 
 <nav>
-  <div class="nav-brand">prov<span>manager</span><span style="font-size:8px;font-weight:300;color:var(--dim);letter-spacing:.04em;margin-left:6px;align-self:flex-end;padding-bottom:1px;">ui&nbsp;v2.0.2&nbsp;·&nbsp;srv&nbsp;<span id="srv-version">…</span></span></div>
+  <!-- [version_dynamic] Network + git SHA + date instead of static UI/srv versions -->
+  <div class="nav-brand">prov<span>manager</span><span style="font-size:9px;font-weight:300;letter-spacing:.04em;margin-left:8px;align-self:flex-end;padding-bottom:1px;display:inline-flex;flex-direction:column;align-items:flex-start;gap:1px;"><span id="net-label" style="font-weight:600;letter-spacing:.08em;color:var(--dim);">…</span><span id="ver-info" style="color:var(--dim);">loading…</span></span></div>
   <div class="nav-sep"></div>
   <div class="nav-rows">
     <div class="nav-row">
@@ -1731,11 +1732,32 @@ async function _autoStakeInfo() {
     }
   } catch(e) {}
 }
-// Fetch server version
+// [version_dynamic] Fetch version info: network + git SHA + date + dirty flag
 fetch(`${API}/api/version`).then(r=>r.json()).then(d=>{
-  const el = document.getElementById("srv-version")
-  if (el) el.textContent = d.version || "?"
-}).catch(()=>{})
+  const netEl = document.getElementById("net-label")
+  const verEl = document.getElementById("ver-info")
+  if (netEl) {
+    const net = (d.network || "unknown").toLowerCase()
+    netEl.textContent = net.toUpperCase()
+    // testnet → amber (experiment-safe), mainnet → teal (production)
+    netEl.style.color = (net === "mainnet") ? "var(--teal)"
+                      : (net === "testnet") ? "#f59e0b"
+                      : "var(--dim)"
+  }
+  if (verEl) {
+    const dirty = d.dirty ? "*" : ""
+    const sha = d.sha || "unknown"
+    const date = d.date || ""
+    const branch = d.branch || "main"
+    verEl.textContent = `${branch}@${sha}${dirty} · ${date}`
+    verEl.title = d.dirty
+      ? "uncommitted local changes on this VPS (run `git status`)"
+      : `clean ${branch}, last commit ${date}`
+  }
+}).catch(()=>{
+  const verEl = document.getElementById("ver-info")
+  if (verEl) verEl.textContent = "version unavailable"
+})
 
 // Safety net: stake-info refresh every 5 min in case we miss an event.
 // Real-time updates flow through _scheduleProvRefresh from RUES events and manual cmd ack.
