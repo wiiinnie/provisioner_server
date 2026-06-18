@@ -609,6 +609,7 @@ def run_harvest(cur_epoch: int) -> None:
         from .assess   import _assess_state_cached, _fetch_capacity_cached
         from .wallet   import WALLET_PATH
         from .rues     import register_tx_confirm, get_tx_confirm_result, wait_for_block
+        from .pool     import clamp_to_pool_balance  # [pool_balance_clamp]
 
         nodes = _assess_state_cached(0, "").get("by_idx", {})
         master_addr  = _addr(old_master_idx, nodes)
@@ -726,6 +727,8 @@ def run_harvest(cur_epoch: int) -> None:
         existing_rotslave = nodes.get(rot_slave_idx, {}).get("stake_dusk", 0.0)
         rotslave_topup    = max(0.0, rotation_floor - existing_rotslave)
         rotslave_alloc    = min(freed_total, rotslave_topup)
+        # [pool_balance_clamp] clamp to actual pool balance before activation
+        rotslave_alloc    = clamp_to_pool_balance(rotslave_alloc, f"[5/7] rot_slave prov{rot_slave_idx}")
         _hlog_step(f"[5/7] top up rot_slave prov[{rot_slave_idx}] with "
                    f"{rotslave_alloc:,.2f} DUSK (existing={existing_rotslave:,.0f}, "
                    f"target={rotation_floor:,.0f}; becomes next rot_active)")
@@ -761,6 +764,8 @@ def run_harvest(cur_epoch: int) -> None:
         # target_master - SEED_DUSK.
         space_on_master = max(0.0, target_master - SEED_DUSK)
         master_alloc    = min(freed_total, space_on_master)
+        # [pool_balance_clamp] clamp to actual pool balance before activation
+        master_alloc    = clamp_to_pool_balance(master_alloc, f"[7/7] standby prov{standby_idx}")
         _hlog_step(f"[7/7] top up standby prov[{standby_idx}] with "
                    f"{master_alloc:,.2f} DUSK (target={target_master:,.0f}; "
                    f"becomes new master)")

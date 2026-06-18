@@ -74,3 +74,38 @@ def _fast_alloc_pool() -> float:
     """Return pool balance from cache — no network call."""
     with _pool_balance_lock:
         return _pool_balance_cache
+
+
+# ── [pool_balance_clamp] safety helper ────────────────────────────────────
+def clamp_to_pool_balance(intended_dusk: float, ctx: str) -> float:
+    """Cap intended stake_activate amount at the actual on-chain pool balance.
+
+    The chain rejects stake_activate when amount > pool_contract_balance with:
+        'Panic: [pool] The stake activation amount should not exceed the
+         pending stake'
+
+    Local accounting (our liquidations + terminations + rewards) can drift
+    below chain reality between when we compute `intended` and when we fire
+    the activation — from deposit-race recycles, user unstakes, other
+    operators consuming the shared pool, or timing races.
+
+    Query the chain fresh (no cache) right before activating. Use the lesser
+    of intended vs actual. If query fails, return intended unchanged (don't
+    deadlock the rotation cycle on a network blip — chain panic is a
+    smaller risk than freezing).
+
+    Returns DUSK amount to actually activate. Caller should still apply its
+    own minimum-threshold check (e.g. < 10 DUSK → skip).
+    """
+    try:
+        pool_dusk = _query_pool_balance_dusk()
+    except Exception as e:
+        _log(f"[pool-clamp] {ctx}: balance query failed ({e}) — "
+             f"proceeding with intended {intended_dusk:.4f} DUSK")
+        return intended_dusk
+
+    if intended_dusk > pool_dusk:
+        _log(f"[pool-clamp] {ctx}: drift — intended {intended_dusk:.4f} > "
+             f"pool {pool_dusk:.4f} DUSK — clamping")
+        return max(0.0, pool_dusk)
+    return intended_dusk

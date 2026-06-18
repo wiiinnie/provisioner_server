@@ -591,6 +591,12 @@ def _run_snatch(cur_epoch: int, blk_left: int) -> None:
             _rlog_warn(f"snatch window: capacity check error: {_ce} — using pool balance")
 
         from .wallet import WALLET_PATH
+        # [pool_balance_clamp] clamp to actual pool balance before activation
+        from .pool import clamp_to_pool_balance
+        alloc_dusk = clamp_to_pool_balance(alloc_dusk, f"snatch[prov{rot_slave_idx}]")
+        if alloc_dusk < 10.0:
+            _rlog_warn(f"snatch window: clamped to {alloc_dusk:.4f} DUSK — too small, skipping")
+            return
         alloc_lux = round(alloc_dusk * 1e9)
         _rlog_step(f"snatch window: {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1, no slash)")
         r = _cmd(f"pool stake-activate --skip-confirmation "
@@ -1024,6 +1030,12 @@ def _run_sweeper(candidate_dusk: float, delta: float, blk_left: int) -> None:
             return
 
         from .wallet import WALLET_PATH
+        # [pool_balance_clamp] clamp to actual pool balance before activation
+        from .pool import clamp_to_pool_balance
+        alloc_dusk = clamp_to_pool_balance(alloc_dusk, f"sweeper[prov{target_idx}]")
+        if alloc_dusk < 10.0:
+            _rlog_warn(f"sweeper: clamped to {alloc_dusk:.4f} DUSK — too small, skipping")
+            return
         alloc_lux = round(alloc_dusk * 1e9)
         _rlog_step(f"sweeper: {alloc_dusk:.4f} DUSK idle → prov[{target_idx}] [{label}]")
         r = _cmd(f"pool stake-activate --skip-confirmation "
@@ -1540,6 +1552,9 @@ def _run_rotation(cur_epoch: int) -> None:
             + (f" - heal_reserve {heal_reserve:.0f} DUSK" if heal_reserve > 0 else "")
             + f" = {alloc_dusk:.4f} DUSK to allocate")
 
+        # [pool_balance_clamp] clamp to actual pool balance before activation
+        from .pool import clamp_to_pool_balance
+        alloc_dusk = clamp_to_pool_balance(alloc_dusk, f"[3/4] alloc[prov{rot_slave_idx}]")
         if alloc_dusk < 10.0:
             _rlog_warn(f"[3/4] only {alloc_dusk:.2f} DUSK to allocate — nothing sent to rot_slave")
         else:
