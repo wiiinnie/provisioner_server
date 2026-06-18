@@ -26,6 +26,26 @@ def _can_send(alert_key: str) -> bool:
     return True
 
 
+def _is_enabled(alert_key: str) -> bool:
+    """[notification_rework] Check whether this alert type is enabled in user config.
+
+    Reads config["notification_settings"][alert_key]. Defaults to True if
+    the key is not present (backward-compat with existing installs).
+
+    Normalizes dynamic-suffix keys: alert_keys like "heal_deferred_3" are
+    looked up under their base key "heal_deferred".
+    """
+    if not alert_key:
+        return True   # untagged alerts (e.g. alert_info) always send
+    settings = cfg("notification_settings") or {}
+    base_key = alert_key
+    if "_" in alert_key:
+        parts = alert_key.rsplit("_", 1)
+        if parts[1].isdigit():
+            base_key = parts[0]
+    return settings.get(base_key, True)
+
+
 def reset_alert(alert_key: str) -> None:
     """Call when the underlying condition clears, so the next crossing re-alerts."""
     with _lock:
@@ -36,6 +56,8 @@ def send(message: str, alert_key: str = "", parse_mode: str = "HTML") -> bool:
     token = cfg("telegram_bot_token") or ""
     chat  = cfg("telegram_chat_id")   or ""
     if not token or not chat:
+        return False
+    if not _is_enabled(alert_key):   # [notification_rework] per-alert config gate
         return False
     if not _can_send(alert_key):
         return False
@@ -262,6 +284,30 @@ def alert_rotation_failed(reason: str) -> None:
         f"{reason}"
     )
     send_async(msg, alert_key="rotation_failed")
+
+
+def alert_rotation_success(
+        cur_epoch: int,
+        node_summaries: list,
+        pool_dusk: float,
+        total_dusk: float,
+) -> None:
+    """[notification_rework] Send rotation success summary with node states + totals.
+
+    node_summaries: list of dicts with keys {idx, stake, role, status}.
+      role:   "master" | "standby" | "rot_active" | "rot_slave" | "rot_seeded" | "—"
+      status: "active" | "1 epoch away" | "2 epochs away" | "inactive" | "unknown"
+    """
+    lines = [f"✅ <b>SOZU — Rotation Complete</b> (epoch {cur_epoch})", ""]
+    for n in node_summaries:
+        lines.append(
+            f"Node {n['idx']}:  <code>{n['stake']:>13,.0f} DUSK</code> "
+            f"· {n['role']} · {n['status']}"
+        )
+    lines.append("")
+    lines.append(f"Pool:   <code>{pool_dusk:>13,.0f} DUSK</code>")
+    lines.append(f"Total:  <code>{total_dusk:>13,.0f} DUSK</code>")
+    send_async("\n".join(lines), alert_key="rotation_success")
 
 
 def alert_info(message: str) -> None:

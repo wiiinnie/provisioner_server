@@ -155,6 +155,20 @@ _CONFIG_DEFAULTS = {
     "master_threshold_pct":    15.0,   # alert when prov0 stake < X% of active_maximum
     "telegram_bot_token":      "",
     "telegram_chat_id":        "",
+    # [notification_rework] per-alert enable/disable toggles
+    "notification_settings": {
+        "master_below_alert_threshold": True,
+        "heal_triggered":               True,
+        "heal_seeded":                  True,
+        "heal_deferred":                True,
+        "heal_force_run":               True,
+        "heal_harvest_complete":        True,
+        "heal_complete":                True,
+        "heal_failed":                  True,
+        "insufficient_operator_stake":  True,
+        "rotation_failed":              True,
+        "rotation_success":             True,
+    },
     "min_deposit_dusk":        100.0,
     "snatch_min_deposit_dusk": 100.0,
     "deposit_race_paused":     False,    # [deposit_race_pause]

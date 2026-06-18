@@ -1620,6 +1620,56 @@ def _run_rotation(cur_epoch: int) -> None:
         _set_state(ROTATING)
         _bump_epoch(cur_epoch)
 
+        # [notification_rework] send rotation success summary to telegram
+        try:
+            from .telegram import alert_rotation_success
+            from .config   import NODE_INDICES, MASTER_PAIR
+            st = _assess()
+            nodes = st.get("by_idx", {})
+            master_idx = _master_idx()
+            rot_idx_list = _rot_indices()
+            summaries = []
+            for _n_idx in NODE_INDICES:
+                _n = nodes.get(_n_idx, {})
+                _stake = _n.get("stake_dusk", 0.0)
+                _ta = _n.get("ta", -1)
+                if _stake < 10:
+                    _status = "inactive"
+                elif _ta == 0:
+                    _status = "active"
+                elif _ta == 1:
+                    _status = "1 epoch away"
+                elif _ta == 2:
+                    _status = "2 epochs away"
+                else:
+                    _status = "unknown"
+                if _n_idx == master_idx:
+                    _role = "master"
+                elif _n_idx in MASTER_PAIR:
+                    _role = "standby"
+                elif _n_idx in rot_idx_list:
+                    if _ta == 0:
+                        _role = "rot_active"
+                    elif _ta == 1:
+                        _role = "rot_slave"
+                    elif _ta == 2:
+                        _role = "rot_seeded"
+                    else:
+                        _role = "rotation"
+                else:
+                    _role = "—"
+                summaries.append({
+                    "idx":    _n_idx,
+                    "stake":  _stake,
+                    "role":   _role,
+                    "status": _status,
+                })
+            _pool  = _pool_dusk()
+            _total = sum(s["stake"] for s in summaries) + _pool
+            alert_rotation_success(cur_epoch, summaries, _pool, _total)
+        except Exception as _notif_err:
+            _rlog_warn(f"rotation success notification failed: {_notif_err}")
+
     except Exception as e:
         _rlog_err(f"rotation sequence error: {e}")
         _set_state(ROTATING)
