@@ -1791,6 +1791,19 @@ async function loadConfig() {
     if (swEl) swEl.checked = !!_cfg.sweeper_enabled
     const swDelayEl = document.getElementById('cfg-sweeper-delay-blocks')
     if (swDelayEl) swDelayEl.value = _cfg.sweeper_delay_blocks ?? 50
+
+    // [notification_ui] load per-alert notification toggles (default true)
+    const _notif = _cfg.notification_settings || {}
+    const _alertKeys = [
+      "rotation_success","rotation_failed",
+      "heal_triggered","heal_seeded","heal_harvest_complete","heal_complete",
+      "heal_deferred","heal_force_run","heal_failed",
+      "master_below_alert_threshold","insufficient_operator_stake"
+    ]
+    for (const _k of _alertKeys) {
+      const _el = document.getElementById(`cfg-notif-${_k}`)
+      if (_el) _el.checked = _notif[_k] !== false   // default true if missing
+    }
     // Rotation config fields
     document.getElementById('cfg-prov-0-address').value = _cfg.prov_0_address || ''
     document.getElementById('cfg-prov-1-address').value = _cfg.prov_1_address || ''
@@ -1850,6 +1863,20 @@ async function saveConfig() {
     sweeper_enabled:      !!(document.getElementById('cfg-sweeper-enabled')?.checked),
     sweeper_delay_blocks: parseInt(document.getElementById('cfg-sweeper-delay-blocks')?.value || '50'),
     telegram_bot_token:   document.getElementById('cfg-telegram-token').value.trim(),
+    // [notification_ui] per-alert notification toggles
+    notification_settings: {
+      rotation_success:              !!document.getElementById('cfg-notif-rotation_success')?.checked,
+      rotation_failed:               !!document.getElementById('cfg-notif-rotation_failed')?.checked,
+      heal_triggered:                !!document.getElementById('cfg-notif-heal_triggered')?.checked,
+      heal_seeded:                   !!document.getElementById('cfg-notif-heal_seeded')?.checked,
+      heal_harvest_complete:         !!document.getElementById('cfg-notif-heal_harvest_complete')?.checked,
+      heal_complete:                 !!document.getElementById('cfg-notif-heal_complete')?.checked,
+      heal_deferred:                 !!document.getElementById('cfg-notif-heal_deferred')?.checked,
+      heal_force_run:                !!document.getElementById('cfg-notif-heal_force_run')?.checked,
+      heal_failed:                   !!document.getElementById('cfg-notif-heal_failed')?.checked,
+      master_below_alert_threshold:  !!document.getElementById('cfg-notif-master_below_alert_threshold')?.checked,
+      insufficient_operator_stake:   !!document.getElementById('cfg-notif-insufficient_operator_stake')?.checked,
+    },
   }
   // Restart prompt if node_state_url changed
   const _newNodeStateUrl = document.getElementById('cfg-node-state-url').value.trim()
@@ -3090,10 +3117,17 @@ function _histToggle(idx) {
   _histRenderEvents()
 }
 
-async function _testTelegram() {
+async function _testTelegram(alertKey) {
   try {
-    const r = await fetch(`${API}/api/telegram/test`, {method:'POST'}).then(r=>r.json())
-    alert(r.ok ? '✅ Telegram test message sent!' : `❌ Failed: ${r.error}`)
+    // [notification_ui] optional alertKey for per-alert test buttons
+    const _body = alertKey ? {alert_key: alertKey} : {}
+    const r = await fetch(`${API}/api/telegram/test`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(_body)
+    }).then(r=>r.json())
+    const _label = alertKey ? ` for '${alertKey}'` : ''
+    alert(r.ok ? `✅ Telegram test message sent${_label}!` : `❌ Failed: ${r.error}`)
   } catch(e) {
     alert(`❌ Error: ${e}`)
   }
@@ -3402,6 +3436,84 @@ setInterval(() => {
         <input class="modal-input" id="cfg-telegram-chatid" type="text" style="margin:0;flex:1;" placeholder="-1001234567890">
         <button onclick="_testTelegram()" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
       </div>
+
+      <!-- [notification_ui] Per-alert notification toggles -->
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Notifications</label>
+
+      <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Rotation —</label>
+      <label style="font-size:11px;color:var(--muted);">Rotation success</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-rotation_success" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">summary after each successful rotation</span>
+        <button onclick="_testTelegram('rotation_success')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Rotation failed</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-rotation_failed" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">rotation could not complete</span>
+        <button onclick="_testTelegram('rotation_failed')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+
+      <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Heal lifecycle —</label>
+      <label style="font-size:11px;color:var(--muted);">Heal triggered</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_triggered" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">master fell below heal threshold</span>
+        <button onclick="_testTelegram('heal_triggered')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Heal seeded</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_seeded" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">standby got 1k seed; maturing</span>
+        <button onclick="_testTelegram('heal_seeded')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Heal harvest complete</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_harvest_complete" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">role swap pending at epoch boundary</span>
+        <button onclick="_testTelegram('heal_harvest_complete')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Heal complete</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_complete" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">role swap done; heal idle</span>
+        <button onclick="_testTelegram('heal_complete')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+
+      <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Heal exceptions —</label>
+      <label style="font-size:11px;color:var(--muted);">Heal deferred</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_deferred" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">we’re substrate unstake target this epoch</span>
+        <button onclick="_testTelegram('heal_deferred')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Heal force-run</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_force_run" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">max deferrals hit; harvesting anyway</span>
+        <button onclick="_testTelegram('heal_force_run')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Heal failed</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-heal_failed" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">step failed; will retry on next crossing</span>
+        <button onclick="_testTelegram('heal_failed')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+
+      <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Operator alerts —</label>
+      <label style="font-size:11px;color:var(--muted);">Master below threshold</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-master_below_alert_threshold" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">stake below alert but above heal threshold</span>
+        <button onclick="_testTelegram('master_below_alert_threshold')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+      <label style="font-size:11px;color:var(--muted);">Insufficient operator stake</label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="cfg-notif-insufficient_operator_stake" style="margin:0;">
+        <span style="font-size:10px;color:var(--dim);flex:1;">heal blocked; deposit more DUSK</span>
+        <button onclick="_testTelegram('insufficient_operator_stake')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
+      </div>
+
 
       <label style="font-size:11px;color:var(--muted);">Min Deposit (DUSK)<br><span style="font-size:10px;color:var(--dim)">minimum incoming deposit amount to trigger auto-allocation (regular &amp; rotation windows)</span></label>
       <input class="modal-input" id="cfg-min-deposit" type="number" step="10" min="0" style="margin:0;" placeholder="100">
