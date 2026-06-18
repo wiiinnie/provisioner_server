@@ -91,9 +91,10 @@ def set_config():
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port",
-                  "sweeper_delay_blocks")
-    bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause]
-    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct", "min_viable_master_dusk")
+                  "sweeper_delay_blocks","max_harvest_deferrals")  # [config_whitelist_fix]
+    bool_keys  = ("sweeper_enabled", "deposit_race_paused", "master_heal_enabled",)  # [deposit_race_pause] [config_whitelist_fix]
+    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct", "min_viable_master_dusk",
+                  "master_alert_threshold_pct","master_heal_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
                   "node_0_log","node_1_log","node_2_log","node_3_log",
@@ -130,6 +131,11 @@ def set_config():
         if k in data: current[k] = bool(data[k])
     for k in str_keys:
         if k in data: current[k] = str(data[k]).strip()
+    # [config_whitelist_fix] dict-typed keys (merge with existing values)
+    dict_keys = ("notification_settings",)
+    for k in dict_keys:
+        if k in data and isinstance(data[k], dict):
+            current[k] = {**(current.get(k) or {}), **data[k]}
     _save_config(current)
     safe = {k: v for k, v in current.items() if not k.endswith("_sk")}
     return jsonify({"ok": True, "config": safe})
@@ -152,8 +158,22 @@ def nodes_heights():
 def telegram_test():
     try:
         from ..telegram import send
-        ok = send("✅ SOZU Dashboard — Telegram test message", alert_key="")
-        return jsonify({"ok": ok, "error": None if ok else "send returned False"})
+        # [config_whitelist_fix] optional alert_key for per-alert test buttons
+        data = request.get_json(silent=True) or {}
+        alert_key = (data.get("alert_key") or "").strip()
+        if alert_key:
+            msg = f"✅ SOZU Dashboard — test message for '{alert_key}'"
+        else:
+            msg = "✅ SOZU Dashboard — Telegram test message"
+        ok = send(msg, alert_key=alert_key)
+        if ok:
+            return jsonify({"ok": True, "error": None})
+        # send() returns False if: no Telegram config / alert disabled / cooldown / API error
+        if alert_key:
+            err = "send returned False (alert may be disabled in config, or in cooldown)"
+        else:
+            err = "send returned False (no Telegram config?)"
+        return jsonify({"ok": False, "error": err})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
