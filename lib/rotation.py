@@ -1620,6 +1620,22 @@ def _run_rotation(cur_epoch: int) -> None:
         _set_state(ROTATING)
         _bump_epoch(cur_epoch)
 
+        # [notification_rework_fresh_state] wait for epoch boundary + invalidate caches so the
+        # TG message reflects POST-boundary ta states. Without this, the message
+        # shows ta=1 ("1 epoch away") for the just-allocated rot_slave even though
+        # the dashboard will show it as ta=0 ("active") a few blocks later when
+        # the epoch transition lands on-chain.
+        try:
+            from .rues   import wait_for_block
+            from .nodes  import get_remote_height
+            from .assess import _invalidate_all_caches
+            _cur_blk = get_remote_height() or 0
+            if _cur_blk:
+                wait_for_block(_cur_blk + 2, timeout=30)
+            _invalidate_all_caches()
+        except Exception as _refresh_err:
+            _rlog_warn(f"rotation success: state refresh failed: {_refresh_err}")
+
         # [notification_rework] send rotation success summary to telegram
         try:
             from .telegram import alert_rotation_success
