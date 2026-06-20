@@ -371,16 +371,12 @@ def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None
         if amount_lux > available_lux:
             _log(f"[events] capping deposit {amount_lux/1e9:.4f} → {available_lux/1e9:.4f} DUSK ({cap_reason}), remainder stays in pool")
             amount_lux = available_lux
-        # [pool_balance_clamp] clamp to actual pool balance (chain-side check)
-        from .pool import clamp_to_pool_balance
-        _clamped_dusk = clamp_to_pool_balance(amount_lux / 1e9, f"deposit_race[prov{idx}]")
-        _clamped_lux  = int(round(_clamped_dusk * 1e9))
-        if _clamped_lux < min_dep_lux:
-            _log(f"[events] pool clamped to {_clamped_dusk:.4f} DUSK < min_dep — skip activation")
-            with _pending_lock:
-                _pending_activations.pop(addr, None)
-            return
-        amount_lux = _clamped_lux
+        # [deposit_race_no_clamp] We intentionally skip [pool_balance_clamp] here.
+        # The clamp's chain query adds 50-200ms latency, which loses the deposit
+        # race against competitors. Protective value here is low: a deposit just
+        # landed (pool capacity INCREASED) and amount_lux is already capped to
+        # available_lux. Rare panic case = one wasted tx, same as losing the
+        # race. Keep clamp for slow paths (rotation/sweeper/heal).
         # Invalidate cache NOW before firing so concurrent threads re-fetch fresh capacity
         _invalidate_capacity_cache()
     except Exception as _cap_err:
