@@ -52,6 +52,68 @@ def status():
     })
 
 
+# [redistribute] manual redistribution endpoints
+@bp.route("/api/redistribute/status")
+def redistribute_status():
+    try:
+        from ..redistribute import get_status
+        return jsonify({"ok": True, **get_status()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@bp.route("/api/redistribute/preview")
+def redistribute_preview():
+    """Preview what a redistribution with the given target would move, using
+    current on-chain state. Query param: ?target=<dusk> (default 1,000,000)."""
+    try:
+        from ..redistribute import _preview_amounts, DEFAULT_TARGET_DUSK
+        from ..rotation import _assess, _master_idx, ROTATION_PAIR
+        target = float(request.args.get("target", DEFAULT_TARGET_DUSK))
+        st    = _assess()
+        nodes = st.get("by_idx", {})
+        cur_master_idx = _master_idx()
+        new_master_idx = next((i for i in (0, 1) if i != cur_master_idx), None)
+        rot_active_idx = next((i for i in ROTATION_PAIR
+                               if nodes.get(i, {}).get("status") == "active"
+                               and nodes.get(i, {}).get("ta") == 0), None)
+        if rot_active_idx is None:
+            return jsonify({"ok": False, "error": "no active rot_master found"})
+        pv = _preview_amounts(nodes, target, rot_active_idx, cur_master_idx)
+        return jsonify({
+            "ok": True,
+            "target": target,
+            "cur_master_idx": cur_master_idx,
+            "new_master_idx": new_master_idx,
+            "rot_active_idx": rot_active_idx,
+            "new_master_inactive": nodes.get(new_master_idx, {}).get("status") == "inactive",
+            **pv,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@bp.route("/api/redistribute/arm", methods=["POST"])
+def redistribute_arm():
+    try:
+        from ..redistribute import arm
+        data = request.get_json(silent=True) or {}
+        target = data.get("target_dusk")
+        return jsonify(arm(target))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@bp.route("/api/redistribute/reset", methods=["POST"])
+def redistribute_reset():
+    try:
+        from ..redistribute import reset
+        reset()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 @bp.route("/api/version")
 def api_version():
     # [version_dynamic] read git metadata at request time

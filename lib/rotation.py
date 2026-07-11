@@ -1396,6 +1396,20 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
 def _run_rotation(cur_epoch: int) -> None:
     _set_state(IN_PROGRESS)
     try:
+        # ── [redistribute] consolidate hook (epoch N+1) ─────────────────
+        # If a redistribution is PRESEEDED and the new master has reached ta==1,
+        # run the consolidate FIRST — it liquidates the current master and must
+        # complete inside the rotation window before the snatch window. The
+        # normal rotation below still runs afterwards to bring rot_master to
+        # target. If consolidate isn't ready this epoch it no-ops and holds.
+        try:
+            from .redistribute import wants_consolidate, perform_consolidate
+            if wants_consolidate(cur_epoch):
+                _rlog_step("redistribute: running CONSOLIDATE before rotation")
+                perform_consolidate(cur_epoch)
+        except Exception as _rd_err:
+            _rlog_warn(f"redistribute consolidate hook error: {_rd_err}")
+
         # ── HEAL hook: in epoch N+1, heal takes the rotation window ─────
         try:
             from .heal import should_run_harvest, run_harvest
@@ -1613,6 +1627,18 @@ def _run_rotation(cur_epoch: int) -> None:
                 perform_epoch_n_seed(cur_epoch)
         except Exception as _heal_err:
             _rlog_warn(f"heal epoch-N seed hook error: {_heal_err}")
+
+        # ── [redistribute] preseed hook (epoch N) ──────────────────────
+        # After the normal rotation, if a redistribution is ARMED and this epoch
+        # is clear of the fronting-target hazard, pre-seed the new master node
+        # with 1k so it enters the maturation pipeline (ta=2 → ta=1 next epoch).
+        try:
+            from .redistribute import wants_preseed, perform_preseed
+            if wants_preseed(cur_epoch):
+                _rlog_step("redistribute: pre-seeding new master after rotation")
+                perform_preseed(cur_epoch)
+        except Exception as _rd_err:
+            _rlog_warn(f"redistribute preseed hook error: {_rd_err}")
 
         _rlog_ok(f"─── rotation epoch {cur_epoch} complete ✓ ───")
         _rlog_info(f"next state: prov[{rot_slave_idx}] → active next epoch | "

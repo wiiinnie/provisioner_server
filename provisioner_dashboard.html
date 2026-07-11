@@ -524,6 +524,8 @@
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-deactivate')">deactivate stake</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-liquidate')">liquidate</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-terminate')">terminate</button>
+        <!-- [redistribute_ui] -->
+        <button class="nav-btn nav-btn-action" onclick="openRedistribute()">redistribute stake</button>
         <div style="width:1px;height:18px;background:var(--border);margin:0 6px;flex-shrink:0;"></div>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-add-prov')">add provisioner</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-remove')">remove provisioner</button>
@@ -992,6 +994,40 @@
   </div>
 </div>
 
+<!-- [redistribute_ui] Redistribute stake -->
+<div class="modal-overlay" id="modal-redistribute">
+  <div class="modal" style="min-width:440px;">
+    <div class="modal-title">Redistribute Stake</div>
+    <div class="modal-body" style="margin-bottom:12px;">
+      Consolidate-and-hop: pin rot_master to a target and move the excess (plus
+      the current master's stake) onto the other master-pair node — no 10% slash.
+      Runs across two rotation windows. The master is only liquidated once its
+      replacement is confirmed maturing (ta==1).
+    </div>
+
+    <label style="font-size:11px;color:var(--muted);">Target rot_master (DUSK)<br>
+      <span style="font-size:10px;color:var(--dim)">stake to keep on the rotation node; excess is redistributed (default 1,000,000)</span>
+    </label>
+    <input class="modal-input" id="rd-target" type="number" step="10000" min="1000"
+           value="1000000" style="margin:0 0 10px 0;" oninput="rdPreview()">
+
+    <div id="rd-preview" style="font-family:'IBM Plex Mono',monospace;font-size:11px;
+         background:var(--bg2);border:1px solid var(--border);border-radius:4px;
+         padding:10px;margin-bottom:10px;color:var(--muted);white-space:pre-wrap;line-height:1.5;">
+      loading preview…
+    </div>
+
+    <div id="rd-state" style="font-size:11px;color:var(--cyan);min-height:16px;margin-bottom:8px;"></div>
+    <div id="rd-status" style="font-size:11px;color:var(--dim);min-height:16px;margin-bottom:8px;"></div>
+
+    <div class="modal-actions">
+      <button class="mbtn mbtn-cancel" onclick="rdReset()">reset / abort</button>
+      <button class="mbtn mbtn-cancel" onclick="closeModal('modal-redistribute')">close</button>
+      <button class="mbtn mbtn-confirm" id="rd-arm-btn" onclick="rdArm()">arm redistribution</button>
+    </div>
+  </div>
+</div>
+
 <!-- Terminate only -->
 <div class="modal-overlay" id="modal-terminate">
   <div class="modal">
@@ -1410,6 +1446,127 @@ function openStakeModal()    { document.getElementById('stake-modal').classList.
 function openUnstakeModal()  { document.getElementById('unstake-modal').classList.add('open') }
 function openWithdrawModal() { document.getElementById('withdraw-modal').classList.add('open') }
 function closeModal(id)      { document.getElementById(id).classList.remove('open') }
+
+// [redistribute_ui] manual redistribution UI
+let _rdArmed = false
+async function openRedistribute() {
+  openModal('modal-redistribute')
+  await rdRefreshState()
+  await rdPreview()
+}
+
+function _rdFmt(n) {
+  if (n == null || isNaN(n)) return '—'
+  return Math.round(n).toLocaleString('en-US')
+}
+
+async function rdRefreshState() {
+  const stateEl  = document.getElementById('rd-state')
+  const armBtn   = document.getElementById('rd-arm-btn')
+  try {
+    const r = await fetch(`${API}/api/redistribute/status`)
+    const d = await r.json()
+    const state = d.state || 'idle'
+    _rdArmed = (state !== 'idle')
+    if (state === 'idle') {
+      stateEl.textContent = 'state: idle — ready to arm'
+      stateEl.style.color = 'var(--dim)'
+      armBtn.textContent = 'arm redistribution'
+      armBtn.disabled = false
+      armBtn.style.opacity = '1'
+    } else {
+      stateEl.textContent = `state: ${state}${d.status_msg ? ' — ' + d.status_msg : ''}`
+      stateEl.style.color = 'var(--cyan)'
+      armBtn.textContent = 'already armed'
+      armBtn.disabled = true
+      armBtn.style.opacity = '0.5'
+    }
+  } catch (e) {
+    stateEl.textContent = 'state: (fetch failed) ' + e
+    stateEl.style.color = 'var(--red)'
+  }
+}
+
+async function rdPreview() {
+  const el = document.getElementById('rd-preview')
+  const target = parseFloat(document.getElementById('rd-target').value || '1000000')
+  el.textContent = 'loading preview…'
+  try {
+    const r = await fetch(`${API}/api/redistribute/preview?target=${encodeURIComponent(target)}`)
+    const d = await r.json()
+    if (!d.ok) { el.textContent = 'preview error: ' + (d.error || 'unknown'); el.style.color = 'var(--red)'; return }
+    const warn = d.new_master_inactive
+      ? ''
+      : `\n⚠ landing zone prov[${d.new_master_idx}] is NOT inactive — pre-seed will defer until it is free`
+    el.style.color = 'var(--muted)'
+    el.textContent =
+      `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} DUSK  (liquidated last, moves to new master)\n` +
+      `new master   prov[${d.new_master_idx}]   ${d.new_master_inactive ? 'inactive — ready' : 'NOT free'}\n` +
+      `rot_active   prov[${d.rot_active_idx}]   ${_rdFmt(d.rot_stake)} DUSK\n` +
+      `\n` +
+      `target       ${_rdFmt(d.target)} DUSK\n` +
+      `excess       ${_rdFmt(d.excess)} DUSK  (rot_stake − target)\n` +
+      `→ new master ends at ~${_rdFmt(d.new_master_size)} DUSK (excess + master), active in 2 epochs` +
+      warn
+  } catch (e) {
+    el.textContent = 'preview fetch failed: ' + e
+    el.style.color = 'var(--red)'
+  }
+}
+
+async function rdArm() {
+  if (_rdArmed) return
+  const target = parseFloat(document.getElementById('rd-target').value || '1000000')
+  const statusEl = document.getElementById('rd-status')
+  if (!confirm(`Arm redistribution with rot_master target ${_rdFmt(target)} DUSK?\n\n` +
+               `This runs across the next two rotation windows and will liquidate the ` +
+               `current master (only after its replacement is confirmed maturing).`)) return
+  statusEl.textContent = 'arming…'
+  statusEl.style.color = 'var(--dim)'
+  try {
+    const r = await fetch(`${API}/api/redistribute/arm`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target_dusk: target})
+    })
+    const d = await r.json()
+    if (d.ok) {
+      statusEl.textContent = 'armed ✓ — will pre-seed at the next rotation window'
+      statusEl.style.color = 'var(--green)'
+      await rdRefreshState()
+    } else {
+      statusEl.textContent = 'arm failed: ' + (d.error || 'unknown')
+      statusEl.style.color = 'var(--red)'
+    }
+  } catch (e) {
+    statusEl.textContent = 'arm request failed: ' + e
+    statusEl.style.color = 'var(--red)'
+  }
+}
+
+async function rdReset() {
+  const statusEl = document.getElementById('rd-status')
+  if (!confirm('Reset/abort the current redistribution?\n\n' +
+               'This clears the armed/pre-seeded state. It does NOT touch on-chain stake. ' +
+               'If a consolidate is mid-flight this will not undo txs already sent.')) return
+  statusEl.textContent = 'resetting…'
+  statusEl.style.color = 'var(--dim)'
+  try {
+    const r = await fetch(`${API}/api/redistribute/reset`, {method: 'POST'})
+    const d = await r.json()
+    if (d.ok) {
+      statusEl.textContent = 'reset ✓ — back to idle'
+      statusEl.style.color = 'var(--green)'
+      await rdRefreshState()
+    } else {
+      statusEl.textContent = 'reset failed: ' + (d.error || 'unknown')
+      statusEl.style.color = 'var(--red)'
+    }
+  } catch (e) {
+    statusEl.textContent = 'reset request failed: ' + e
+    statusEl.style.color = 'var(--red)'
+  }
+}
 
 // ── LIVE PROVISIONER PANEL ───────────────────────────────────────────────────
 
