@@ -275,7 +275,14 @@ def is_in_progress() -> bool:
 
 
 def wants_epoch_n_seed() -> bool:
-    """True if rotation window should append a 1k seed of standby."""
+    """True if rotation window should append a 1k seed of standby.
+
+    Gated on master_heal_enabled: a stale persisted AWAITING_N state must NOT
+    drive a standby seed while heal is disabled — that seed collides with
+    redistribute, which owns the same master-pair standby node (prov[1]).
+    """
+    if not cfg("master_heal_enabled"):
+        return False
     return get_state() == AWAITING_N
 
 
@@ -525,6 +532,9 @@ def perform_epoch_n_seed(cur_epoch: int) -> bool:
 
     Returns True on success (state advances to SEEDED), False on failure.
     """
+    if not cfg("master_heal_enabled"):
+        _hlog_warn("perform_epoch_n_seed called but master_heal_enabled=False — skipping")
+        return False
     if get_state() != AWAITING_N:
         _hlog_warn(f"perform_epoch_n_seed called but state={get_state()} — skipping")
         return False

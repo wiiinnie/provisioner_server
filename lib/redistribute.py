@@ -280,6 +280,19 @@ def wants_preseed(cur_epoch: int) -> bool:
             _rdlog_warn("preseed check: could not resolve new_master — deferring")
             return False
 
+        # Single-owner guard: heal and redistribute both target the master-pair
+        # standby (prov[new_master_idx]). If a heal cycle is mid-flight on the
+        # same node, its seed/harvest would corrupt our maturation clock and
+        # liquidate the master out from under us (the epoch-1743 skip). Defer.
+        try:
+            from .heal import is_in_progress, get_status as _heal_status
+            if is_in_progress() and _heal_status().get("standby_idx") == new_master_idx:
+                _rdlog_warn(f"preseed deferred: heal is mid-cycle on prov[{new_master_idx}] "
+                            f"(standby) — waiting for heal to clear before touching it")
+                return False
+        except Exception as _he:
+            _rdlog_warn(f"preseed: heal-ownership check failed ({_he}) — proceeding cautiously")
+
         # It must currently be inactive (a clean landing zone).
         new_status = nodes.get(new_master_idx, {}).get("status")
         if new_status != "inactive":
