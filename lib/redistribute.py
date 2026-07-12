@@ -129,6 +129,7 @@ def _rdlog_ok(m):   _rdlog(m, "ok")
 def _rdlog_warn(m): _rdlog(m, "warn")
 def _rdlog_err(m):  _rdlog(m, "error")
 def _rdlog_step(m): _rdlog(m, "step")
+def _rdlog_info(m): _rdlog(m, "info")
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
