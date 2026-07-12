@@ -31,16 +31,22 @@ TWO-EPOCH FLOW
 Epoch N   (rotation window): normal rotation runs, PLUS pre-seed new_master
           with 1000 DUSK so it enters the maturation pipeline (ta=2 this epoch).
 Boundary  N→N+1: new_master ta 2 → 1.
-Epoch N+1 (rotation window, before snatch): the consolidate —
+Epoch N+1 (rotation window, before snatch): the consolidate OWNS the whole
+          window (normal rotation is skipped) and runs the full 7-tx sequence,
+          mirroring heal's harvest ordering:
     1. confirm new_master is ta==1 (no-master guard)
-    2. liquidate rot_master (rotation pair) → pool
-    3. re-seed rot_slave nothing special (normal rotation handles the pair)
-    4. liquidate cur_master → pool
-    5. top-up new_master (ta==1) with excess + cur_master stake  ← no slash
+    2. liquidate + terminate cur_master → pool
+    3. liquidate + terminate rot_master (rot_active) → pool   (frees the excess)
+    4. top-up new_master (ta==1) with excess + cur_master stake  ← no slash
        on failure: fallback ladder (rot_slave ta==1 → any ta==1 → any node)
-    6. activate rot_slave → rot_master at target
-Boundary  N+1→N+2: new_master active (huge), cur_master freed, rot_master at
-          target. Master has hopped.
+    5. top-up rot_slave (ta==1) → target                     (next rot_master)
+    6. re-seed rot_active with 1k → ta=2
+Both liquidations happen BEFORE the new_master top-up so the pool actually holds
+the excess — otherwise the pool-balance clamp silently drops it. rot_master must
+be freed here (not delegated to normal rotation, which ignores `target` and
+would recycle the whole excess back into the rotation pair).
+Boundary  N+1→N+2: new_master active (excess+master), cur_master freed,
+          rot_slave active as rot_master at target. Master has hopped.
 
 GUARDS
 ------
@@ -423,20 +429,67 @@ def wants_consolidate(cur_epoch: int) -> bool:
         return False
 
 
-def perform_consolidate(cur_epoch: int) -> None:
-    """The epoch-N+1 consolidate. MUST be called early in the rotation window so
-    all txs complete before the snatch window. Sequence keeps rot_slave (ta==1)
-    untouched as the failure fallback until after the risky master top-up.
+def _pool_tx_confirmed(R, kind: str, addr: str,
+                       register_tx_confirm, get_tx_confirm_result, wait_for_block,
+                       gap: bool = True) -> tuple:
+    """Fire a liquidate/terminate on `addr`, wait for tx/executed + on-chain
+    revert check, then (if gap) wait n+2 blocks and invalidate the capacity
+    cache. Returns (ok, empty): empty=True iff the node had nothing to act on
+    (already empty / not eligible) — a benign no-op, treated as success.
+    """
+    evt = register_tx_confirm(kind, addr)
+    cmd = (f"pool liquidate --skip-confirmation --provisioner {addr}" if kind == "liquidate"
+           else f"pool terminate --skip-confirmation --provisioner {addr}")
+    r = R._cmd(cmd)
+    if not r.get("ok"):
+        err = r.get("stderr", "")[:300]
+        if any(x in err.lower() for x in ("no stake", "does not exist",
+                                          "nothing to", "not eligible")):
+            return True, True
+        _rdlog_err(f"{kind} prov@{addr[:12]}…: CLI failed: {err}")
+        return False, False
+    if not evt.wait(timeout=TX_CONFIRM_TIMEOUT):
+        _rdlog_err(f"{kind} confirmation timeout")
+        return False, False
+    res = get_tx_confirm_result(kind, addr)
+    if (res or {}).get("err"):
+        _rdlog_err(f"{kind} REVERTED: {str(res['err'])[:200]}")
+        return False, False
+    if gap:
+        blk = (res or {}).get("block_height", 0)
+        if blk:
+            if not wait_for_block(blk + 1, timeout=60):
+                _rdlog_warn(f"  ↳ {kind} block-gap wait timeout — proceeding")
+        else:
+            time.sleep(22)
+    try:
+        from .assess import _invalidate_capacity_cache
+        _invalidate_capacity_cache()
+    except Exception:
+        pass
+    return True, False
 
-    Order:
-      1. re-confirm new_master ta==1 (no-master guard)
-      2. snatch-window time budget check
-      3. liquidate cur_master → pool
-      4. top-up new_master (ta==1) with excess + master   ← failure ladder here
-      5. (normal rotation handles the rotation-pair liquidate/activate to target)
+
+def perform_consolidate(cur_epoch: int) -> bool:
+    """The epoch-N+1 consolidate. Owns the ENTIRE rotation window (like heal's
+    harvest): it liquidates BOTH rot_master and cur_master so the pool actually
+    holds the excess, tops up new_master (ta==1) with excess + master (no slash),
+    brings rot_slave up to `target` as the next rot_master, and re-seeds
+    rot_active. The normal rotation body is skipped for this epoch.
+
+    Returns True if it took over the window (caller MUST skip normal rotation),
+    False if it aborted BEFORE touching any stake (caller runs normal rotation).
+
+    Sequence (one tx in flight, n+2 gap between — mirrors run_harvest ordering):
+      1. liquidate cur_master   (prov[0])       → pool   [PRE-COMMIT]
+      2. terminate cur_master                            (free rewards + record)
+      3. liquidate rot_master   (rot_active)    → pool   (frees the excess)
+      4. terminate rot_master
+      5. top-up new_master  (ta==1)  excess + master     (no slash; new master)
+      6. top-up rot_slave   (ta==1)  → target            (next rot_master)
+      7. re-seed rot_active          1k → ta=2
     """
     R = _rot_helpers()
-    from .wallet import WALLET_PATH
     from .rues import register_tx_confirm, get_tx_confirm_result, wait_for_block
 
     with _rd_state_lock:
@@ -453,11 +506,12 @@ def perform_consolidate(cur_epoch: int) -> None:
                    f"master untouched.")
         _notify_failed(f"new master prov[{new_master_idx}] not ta==1 at execute — aborted")
         reset()
-        return
+        return False
 
     # ── Guard 2: snatch-window time budget ───────────────────────────────────
-    # cur block-left in epoch must leave room for liquidate + topup before the
-    # snatch window. Each tx ~ up to a few blocks; require a comfortable margin.
+    # The full sequence is up to 7 sequential txs; require a comfortable margin
+    # above the snatch window so all of it lands before liquidated stake becomes
+    # grabbable.
     try:
         from .rues import get_status as _rues_status
         blk_now  = (_rues_status() or {}).get("block_height", 0)
@@ -466,11 +520,11 @@ def perform_consolidate(cur_epoch: int) -> None:
     if blk_now:
         blk_left   = R.EPOCH_BLOCKS - (blk_now % R.EPOCH_BLOCKS)
         snatch_win = int(cfg("snatch_window") or 11)
-        # need at least ~10 blocks of headroom above snatch for 2 sequential txs
-        if blk_left <= snatch_win + 10:
+        if blk_left <= snatch_win + 20:
             _rdlog_warn(f"consolidate deferred: blk_left={blk_left} too close to snatch "
-                        f"({snatch_win}) — retrying next rotation window (master untouched)")
-            return
+                        f"({snatch_win}) for the full 7-tx sequence — retrying next window "
+                        f"(master untouched)")
+            return False
 
     cur_master_addr = R._addr(cur_master_idx, nodes)
     new_master_addr = R._addr(new_master_idx, nodes)
@@ -481,78 +535,137 @@ def perform_consolidate(cur_epoch: int) -> None:
                             and nodes.get(i, {}).get("ta") == 0), None)
     rot_slave_idx   = next((i for i in ROTATION_PAIR
                             if nodes.get(i, {}).get("ta") == 1), None)
-    rot_stake       = nodes.get(rot_active_idx, {}).get("stake_dusk", 0.0) if rot_active_idx is not None else 0.0
+
+    # Need the rotation pair in the normal A:1 shape to run the full sequence.
+    # If it isn't, don't touch the master — let normal rotation handle the odd
+    # state this epoch and retry the consolidate next window.
+    if rot_active_idx is None or rot_slave_idx is None:
+        _rdlog_warn(f"consolidate: rotation pair not in expected shape "
+                    f"(rot_active={rot_active_idx}, rot_slave={rot_slave_idx}) — deferring to "
+                    f"normal rotation this epoch, master untouched")
+        return False
+
+    rot_active_addr = R._addr(rot_active_idx, nodes)
+    rot_slave_addr  = R._addr(rot_slave_idx, nodes)
+    rot_stake       = nodes.get(rot_active_idx, {}).get("stake_dusk", 0.0)
+    rot_slave_stake = nodes.get(rot_slave_idx, {}).get("stake_dusk", 0.0)
     excess          = max(0.0, rot_stake - target_dusk)
 
     _rdlog_step(f"─── consolidate epoch {cur_epoch} ───")
     _rdlog_info(f"cur_master prov[{cur_master_idx}] stake={master_stake:.0f} locked={master_locked:.0f} | "
                 f"new_master prov[{new_master_idx}] (ta=1) | rot_active prov[{rot_active_idx}] "
-                f"stake={rot_stake:.0f} | target={target_dusk:.0f} | excess={excess:.0f}")
+                f"stake={rot_stake:.0f} | rot_slave prov[{rot_slave_idx}] | "
+                f"target={target_dusk:.0f} | excess={excess:.0f}")
 
-    # ── Step 1: liquidate cur_master → pool ──────────────────────────────────
-    _rdlog_step(f"[1/2] liquidate cur_master prov[{cur_master_idx}] ({master_stake:.0f} DUSK)")
-    liq_evt = register_tx_confirm("liquidate", cur_master_addr)
-    r_liq   = R._cmd(f"pool liquidate --skip-confirmation --provisioner {cur_master_addr}")
-    if not r_liq.get("ok"):
-        err = r_liq.get("stderr", "")[:300]
-        if any(x in err.lower() for x in ("no stake", "does not exist", "nothing to liquidate")):
-            _rdlog_warn("[1/2] cur_master already empty — nothing to consolidate; aborting cleanly")
-            _notify_failed("cur_master had no stake to liquidate — nothing to do")
-            reset()
-            return
-        _rdlog_err(f"[1/2] liquidate cur_master FAILED: {err} — master untouched, aborting")
-        _notify_failed(f"cur_master liquidate failed: {err[:120]}")
+    # ── Step 1: liquidate cur_master → pool (PRE-COMMIT: abort keeps master) ──
+    _rdlog_step(f"[1/7] liquidate cur_master prov[{cur_master_idx}] ({master_stake:.0f} DUSK)")
+    ok, empty = _pool_tx_confirmed(R, "liquidate", cur_master_addr,
+                                   register_tx_confirm, get_tx_confirm_result, wait_for_block)
+    if empty:
+        _rdlog_warn("[1/7] cur_master already empty — nothing to consolidate; aborting cleanly")
+        _notify_failed("cur_master had no stake to liquidate — nothing to do")
         reset()
-        return
-    if not liq_evt.wait(timeout=TX_CONFIRM_TIMEOUT):
-        _rdlog_err("[1/2] liquidate confirmation timeout — CANNOT confirm master freed. "
-                   "NOT proceeding to top-up (risk of double-spend). Manual check needed.")
-        _notify_failed("cur_master liquidate confirmation timeout — manual check needed")
+        return False
+    if not ok:
+        _rdlog_err("[1/7] liquidate cur_master failed/timeout — master untouched, aborting "
+                   "(normal rotation will run)")
+        _notify_failed("cur_master liquidate failed — aborted, master intact")
         reset()
-        return
-    liq_res = get_tx_confirm_result("liquidate", cur_master_addr)
-    if (liq_res or {}).get("err"):
-        _rdlog_err(f"[1/2] liquidate REVERTED: {str(liq_res['err'])[:200]} — master stake intact, aborting")
-        _notify_failed(f"cur_master liquidate reverted: {str(liq_res['err'])[:120]}")
-        reset()
-        return
+        return False
     freed = master_stake + master_locked
-    _rdlog_ok(f"[1/2] cur_master liquidated — {freed:.0f} DUSK freed to pool")
+    _rdlog_ok(f"[1/7] cur_master liquidated — {freed:.0f} DUSK freed to pool")
 
-    # n+2 block gap safety before the next tx (matches rotation convention)
-    liq_block = (liq_res or {}).get("block_height", 0)
-    if liq_block:
-        if not wait_for_block(liq_block + 1, timeout=60):
-            _rdlog_warn("  ↳ block-gap wait timeout — proceeding")
-    else:
-        time.sleep(22)
+    # ══ COMMITTED: we own the window now; every exit below returns True ═══════
+    rot_liquidated = False
+    try:
+        # ── Step 2: terminate cur_master (free rewards + clear record) ───────
+        _rdlog_step(f"[2/7] terminate cur_master prov[{cur_master_idx}]")
+        t_ok, _t_empty = _pool_tx_confirmed(R, "terminate", cur_master_addr,
+                                            register_tx_confirm, get_tx_confirm_result, wait_for_block)
+        if not t_ok:
+            _rdlog_warn("[2/7] terminate cur_master failed — rewards not freed; continuing")
 
-    # ── Step 2: top-up new_master with excess + freed master stake ───────────
-    topup_dusk = excess + freed
-    _rdlog_step(f"[2/2] top-up new_master prov[{new_master_idx}] with {topup_dusk:.0f} DUSK "
-                f"(excess {excess:.0f} + master {freed:.0f})")
+        # ── Step 3: liquidate rot_master (rot_active) → pool (frees excess) ──
+        _rdlog_step(f"[3/7] liquidate rot_master prov[{rot_active_idx}] ({rot_stake:.0f} DUSK)")
+        r_ok, r_empty = _pool_tx_confirmed(R, "liquidate", rot_active_addr,
+                                           register_tx_confirm, get_tx_confirm_result, wait_for_block)
+        rot_liquidated = r_ok and not r_empty
+        if not rot_liquidated:
+            _rdlog_warn(f"[3/7] rot_master liquidate {'empty' if r_empty else 'failed'} — the "
+                        f"excess stays in the rotation pair this cycle; still recovering master stake")
 
-    ok = _stake_activate_clamped(R, new_master_idx, new_master_addr, topup_dusk,
-                                 nodes, ctx="new_master", require_maturing=True)
-    if ok:
-        _rdlog_ok(f"[2/2] new_master prov[{new_master_idx}] topped up — will activate next boundary "
-                  f"as the new master (~{topup_dusk:.0f} DUSK)")
-        _notify_done(cur_master_idx, new_master_idx, topup_dusk, target_dusk)
-        # Point the master hint at the new master so _master_idx tracks the hop.
+        # ── Step 4: terminate rot_master (only if it had stake) ─────────────
+        if rot_liquidated:
+            _rdlog_step(f"[4/7] terminate rot_master prov[{rot_active_idx}]")
+            rt_ok, _rt_empty = _pool_tx_confirmed(R, "terminate", rot_active_addr,
+                                                  register_tx_confirm, get_tx_confirm_result, wait_for_block)
+            if not rt_ok:
+                _rdlog_warn("[4/7] terminate rot_master failed — re-seed in step 7 may be skipped")
+
+        # ── Step 5: top-up new_master with excess + freed master (no slash) ──
+        # If rot_master wasn't liquidated the excess isn't in the pool; the pool
+        # clamp inside _stake_activate_clamped drops it automatically.
+        topup_new = (excess if rot_liquidated else 0.0) + freed
+        _rdlog_step(f"[5/7] top-up new_master prov[{new_master_idx}] with {topup_new:.0f} DUSK "
+                    f"(excess {excess if rot_liquidated else 0:.0f} + master {freed:.0f})")
+        new_ok = _stake_activate_clamped(R, new_master_idx, new_master_addr, topup_new,
+                                         nodes, ctx="new_master", require_maturing=True)
+        if not new_ok:
+            _rdlog_err("[5/7] new_master top-up failed — entering failure-recovery ladder "
+                       "(freed master stake must be re-staked before snatch)")
+            if _recover_stranded_stake(R, topup_new, nodes, new_master_idx, rot_slave_idx):
+                _notify_partial(cur_master_idx, new_master_idx)
+            else:
+                _rdlog_err("CRITICAL: could not re-stake freed master stake anywhere — "
+                           "manual intervention required NOW before snatch window.")
+                _notify_critical(topup_new)
+            reset()
+            return True
+        _rdlog_ok(f"[5/7] new_master prov[{new_master_idx}] topped up — activates next boundary as "
+                  f"the new master (~{topup_new:.0f} DUSK)")
         _repoint_master_hint(new_master_idx)
-        reset()
-        return
 
-    # ── FAILURE RECOVERY LADDER ──────────────────────────────────────────────
-    _rdlog_err(f"[2/2] new_master top-up failed — entering failure-recovery ladder "
-               f"({topup_dusk:.0f} DUSK in pool must be re-staked before snatch)")
-    if _recover_stranded_stake(R, topup_dusk, nodes, new_master_idx, rot_slave_idx):
-        _notify_partial(cur_master_idx, new_master_idx)
-    else:
-        _rdlog_err("CRITICAL: could not re-stake freed master stake anywhere — "
-                   "manual intervention required NOW before snatch window.")
-        _notify_critical(topup_dusk)
-    reset()
+        # ── Steps 6 & 7: return the rotation pair to target (only if freed) ──
+        if rot_liquidated:
+            slave_topup = max(0.0, target_dusk - rot_slave_stake)
+            if slave_topup >= 10.0:
+                _rdlog_step(f"[6/7] top-up rot_slave prov[{rot_slave_idx}] to target "
+                            f"({slave_topup:.0f} DUSK → {target_dusk:.0f}) — becomes next rot_master")
+                if not _stake_activate_clamped(R, rot_slave_idx, rot_slave_addr, slave_topup,
+                                               nodes, ctx="rot_slave", require_maturing=True):
+                    _rdlog_warn("[6/7] rot_slave top-up failed — pool remainder left for the "
+                                "state-check/deposit-race to allocate")
+            else:
+                _rdlog_info(f"[6/7] rot_slave already at/above target ({rot_slave_stake:.0f}) — skip")
+
+            # rot_active was just liquidated+terminated → not active; require_maturing
+            # is False here (the stale `nodes` still shows it active, which would
+            # wrongly trip the anti-slash guard).
+            _rdlog_step(f"[7/7] re-seed rot_active prov[{rot_active_idx}] with {SEED_DUSK:.0f} DUSK → ta=2")
+            if not _stake_activate_clamped(R, rot_active_idx, rot_active_addr, SEED_DUSK,
+                                           nodes, ctx="rot_active_reseed", require_maturing=False):
+                _rdlog_warn("[7/7] rot_active re-seed failed — state check will retry seeding from pool")
+        else:
+            _rdlog_info("[6/7] rotation pair untouched (rot_master not liquidated) — "
+                        "normal rotation cadence resumes next epoch")
+
+        _rdlog_ok(f"─── consolidate epoch {cur_epoch} complete ✓ — master hopped "
+                  f"prov[{cur_master_idx}]→prov[{new_master_idx}] ───")
+        _notify_done(cur_master_idx, new_master_idx, topup_new, target_dusk)
+        reset()
+        return True
+
+    except Exception as e:
+        # Crash AFTER commit: freed stake must not be stranded through snatch.
+        _rdlog_err(f"consolidate crashed after commit: {e} — attempting stranded-stake recovery")
+        try:
+            _recover_stranded_stake(R, (excess if rot_liquidated else 0.0) + freed,
+                                    nodes, new_master_idx, rot_slave_idx)
+        except Exception as e2:
+            _rdlog_err(f"post-crash recovery also failed: {e2} — manual intervention needed")
+            _notify_critical((excess if rot_liquidated else 0.0) + freed)
+        reset()
+        return True
 
 
 # ── Capacity-clamped stake_activate ───────────────────────────────────────────

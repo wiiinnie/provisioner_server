@@ -1405,8 +1405,12 @@ def _run_rotation(cur_epoch: int) -> None:
         try:
             from .redistribute import wants_consolidate, perform_consolidate
             if wants_consolidate(cur_epoch):
-                _rlog_step("redistribute: running CONSOLIDATE before rotation")
-                perform_consolidate(cur_epoch)
+                _rlog_step("redistribute: running CONSOLIDATE (owns this window)")
+                if perform_consolidate(cur_epoch):
+                    # Consolidate took over the whole window (liquidated the
+                    # rotation pair too) — skip the normal rotation body.
+                    _rlog_ok(f"─── consolidate epoch {cur_epoch}: normal rotation skipped ───")
+                    _set_state(ROTATING); _bump_epoch(cur_epoch); return
         except Exception as _rd_err:
             _rlog_warn(f"redistribute consolidate hook error: {_rd_err}")
 
