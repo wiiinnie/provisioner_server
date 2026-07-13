@@ -215,6 +215,12 @@ def _fetch_capacity_cached(pw: str, force: bool = False) -> dict:
     return result
 
 
+def _invalidate_assess_cache() -> None:
+    global _assess_cache_ts
+    with _assess_cache_lock:
+        _assess_cache_ts = 0.0
+
+
 def _invalidate_all_caches() -> None:
     """Call on activate events — stake state and capacity both changed."""
     _invalidate_assess_cache()
