@@ -253,11 +253,18 @@ def _preview_amounts(nodes: dict, target_dusk: float,
     """
     rot_stake  = nodes.get(rot_active_idx, {}).get("stake_dusk", 0.0)
     mas_stake  = nodes.get(cur_master_idx, {}).get("stake_dusk", 0.0)
+    mas_locked = nodes.get(cur_master_idx, {}).get("locked_dusk", 0.0)
     excess     = max(0.0, rot_stake - target_dusk)
-    new_master = excess + mas_stake     # what the new master ends up with
+    # The consolidate liquidates cur_master, which frees BOTH its stake and its
+    # locked collateral to the pool; all of it lands on the new master together
+    # with the excess. Match the executor (perform_consolidate: freed = stake +
+    # locked). Omitting locked here understated the new master by the locked
+    # amount (e.g. ~950k in the first testnet run).
+    new_master = excess + mas_stake + mas_locked
     return {
         "rot_stake":       rot_stake,
         "master_stake":    mas_stake,
+        "master_locked":   mas_locked,
         "target":          target_dusk,
         "excess":          excess,
         "new_master_size": new_master,

@@ -1500,13 +1500,13 @@ async function rdPreview() {
       : `\n⚠ landing zone prov[${d.new_master_idx}] is NOT inactive — pre-seed will defer until it is free`
     el.style.color = 'var(--muted)'
     el.textContent =
-      `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} DUSK  (liquidated last, moves to new master)\n` +
+      `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} + ${_rdFmt(d.master_locked || 0)} locked DUSK  (moves to new master)\n` +
       `new master   prov[${d.new_master_idx}]   ${d.new_master_inactive ? 'inactive — ready' : 'NOT free'}\n` +
       `rot_active   prov[${d.rot_active_idx}]   ${_rdFmt(d.rot_stake)} DUSK\n` +
       `\n` +
       `target       ${_rdFmt(d.target)} DUSK\n` +
       `excess       ${_rdFmt(d.excess)} DUSK  (rot_stake − target)\n` +
-      `→ new master ends at ~${_rdFmt(d.new_master_size)} DUSK (excess + master), active in 2 epochs` +
+      `→ new master ends at ~${_rdFmt(d.new_master_size)} DUSK (excess + master stake + locked), active in 2 epochs` +
       warn
   } catch (e) {
     el.textContent = 'preview fetch failed: ' + e
