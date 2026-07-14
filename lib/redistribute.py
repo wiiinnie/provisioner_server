@@ -252,17 +252,20 @@ def _preview_amounts(nodes: dict, target_dusk: float,
     for the executor. All DUSK.
     """
     rot_stake  = nodes.get(rot_active_idx, {}).get("stake_dusk", 0.0)
+    rot_locked = nodes.get(rot_active_idx, {}).get("locked_dusk", 0.0)
     mas_stake  = nodes.get(cur_master_idx, {}).get("stake_dusk", 0.0)
     mas_locked = nodes.get(cur_master_idx, {}).get("locked_dusk", 0.0)
-    excess     = max(0.0, rot_stake - target_dusk)
-    # The consolidate liquidates cur_master, which frees BOTH its stake and its
-    # locked collateral to the pool; all of it lands on the new master together
-    # with the excess. Match the executor (perform_consolidate: freed = stake +
-    # locked). Omitting locked here understated the new master by the locked
-    # amount (e.g. ~950k in the first testnet run).
+    # The consolidate liquidates BOTH cur_master and rot_master, freeing each
+    # node's stake AND locked collateral to the pool; everything above `target`
+    # lands on the new master. Count locked on BOTH nodes: omitting the ROT
+    # node's locked stranded it in the pool → snatch-exposed (a ~10k loss on the
+    # first mainnet run); omitting the master's understated the size (~950k on
+    # testnet). excess therefore includes rot_locked.
+    excess     = max(0.0, rot_stake + rot_locked - target_dusk)
     new_master = excess + mas_stake + mas_locked
     return {
         "rot_stake":       rot_stake,
+        "rot_locked":      rot_locked,
         "master_stake":    mas_stake,
         "master_locked":   mas_locked,
         "target":          target_dusk,
@@ -555,13 +558,18 @@ def perform_consolidate(cur_epoch: int) -> bool:
     rot_active_addr = R._addr(rot_active_idx, nodes)
     rot_slave_addr  = R._addr(rot_slave_idx, nodes)
     rot_stake       = nodes.get(rot_active_idx, {}).get("stake_dusk", 0.0)
+    rot_locked      = nodes.get(rot_active_idx, {}).get("locked_dusk", 0.0)
     rot_slave_stake = nodes.get(rot_slave_idx, {}).get("stake_dusk", 0.0)
-    excess          = max(0.0, rot_stake - target_dusk)
+    # excess counts the rot node's locked collateral too: liquidating rot_master
+    # frees stake + locked to the pool, and everything above target must land on
+    # the new master. Omitting rot_locked left it stranded in the pool where the
+    # snatch window could take it (a ~10k loss on the first mainnet run).
+    excess          = max(0.0, rot_stake + rot_locked - target_dusk)
 
     _rdlog_step(f"─── consolidate epoch {cur_epoch} ───")
     _rdlog_info(f"cur_master prov[{cur_master_idx}] stake={master_stake:.0f} locked={master_locked:.0f} | "
                 f"new_master prov[{new_master_idx}] (ta=1) | rot_active prov[{rot_active_idx}] "
-                f"stake={rot_stake:.0f} | rot_slave prov[{rot_slave_idx}] | "
+                f"stake={rot_stake:.0f} locked={rot_locked:.0f} | rot_slave prov[{rot_slave_idx}] | "
                 f"target={target_dusk:.0f} | excess={excess:.0f}")
 
     # ── Step 1: liquidate cur_master → pool (PRE-COMMIT: abort keeps master) ──

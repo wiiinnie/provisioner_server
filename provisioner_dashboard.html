@@ -1502,10 +1502,10 @@ async function rdPreview() {
     el.textContent =
       `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} + ${_rdFmt(d.master_locked || 0)} locked DUSK  (moves to new master)\n` +
       `new master   prov[${d.new_master_idx}]   ${d.new_master_inactive ? 'inactive — ready' : 'NOT free'}\n` +
-      `rot_active   prov[${d.rot_active_idx}]   ${_rdFmt(d.rot_stake)} DUSK\n` +
+      `rot_active   prov[${d.rot_active_idx}]   ${_rdFmt(d.rot_stake)} + ${_rdFmt(d.rot_locked || 0)} locked DUSK\n` +
       `\n` +
       `target       ${_rdFmt(d.target)} DUSK\n` +
-      `excess       ${_rdFmt(d.excess)} DUSK  (rot_stake − target)\n` +
+      `excess       ${_rdFmt(d.excess)} DUSK  (rot stake + locked − target)\n` +
       `→ new master ends at ~${_rdFmt(d.new_master_size)} DUSK (excess + master stake + locked), active in 2 epochs` +
       warn
   } catch (e) {
