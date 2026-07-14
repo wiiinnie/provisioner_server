@@ -509,6 +509,11 @@ def perform_consolidate(cur_epoch: int) -> bool:
 
     st    = R._assess()
     nodes = st.get("by_idx", {})
+    # Snapshot the operator's total on-node stake (stake + locked) BEFORE the
+    # consolidate so the completion alert can report the delta. It should end
+    # >= 0 (conserved, or higher if idle pool stake was swept in); a drop means
+    # stake leaked off-node — stranded in the pool or taken by the snatch window.
+    stake_sum_before = _committed_sum(nodes)
 
     # ── Guard 1: no-master — new_master must be ta==1 ─────────────────────────
     if nodes.get(new_master_idx, {}).get("ta") != 1:
@@ -666,7 +671,15 @@ def perform_consolidate(cur_epoch: int) -> bool:
 
         _rdlog_ok(f"─── consolidate epoch {cur_epoch} complete ✓ — master hopped "
                   f"prov[{cur_master_idx}]→prov[{new_master_idx}] ───")
-        _notify_done(cur_master_idx, new_master_idx, topup_new, target_dusk)
+        try:
+            stake_sum_after = _committed_sum(R._assess().get("by_idx", {}))
+        except Exception as _se:
+            _rdlog_warn(f"post-consolidate stake-sum assess failed ({_se}) — reporting no delta")
+            stake_sum_after = stake_sum_before
+        _rdlog_info(f"stake sum: {stake_sum_before:,.0f} → {stake_sum_after:,.0f} DUSK "
+                    f"(Δ {stake_sum_after - stake_sum_before:+,.0f})")
+        _notify_done(cur_master_idx, new_master_idx, topup_new, target_dusk,
+                     stake_sum_before, stake_sum_after)
         reset()
         return True
 
@@ -809,12 +822,33 @@ def _tg(fn_name: str, *args) -> None:
         _log(f"[redistribute] telegram '{fn_name}' failed: {e}")
 
 
-def _notify_done(cur_idx, new_idx, topup_dusk, target_dusk) -> None:
-    _tg("alert_info",
-        f"✅ Redistribution complete.\n"
-        f"New master: prov[{new_idx}] (~{topup_dusk:,.0f} DUSK, active next epoch)\n"
-        f"Freed node: prov[{cur_idx}] (ready for next redistribution)\n"
-        f"rot_master target: {target_dusk:,.0f} DUSK")
+def _committed_sum(nodes: dict) -> float:
+    """Total operator stake committed ON NODES = Σ(stake + locked) over all
+    provisioners. A redistribution should conserve this (or grow it, if idle
+    pool stake was swept in). A DROP means stake left the nodes — stranded in
+    the pool (recoverable) or taken by the snatch window."""
+    return sum((n.get("stake_dusk", 0.0) + n.get("locked_dusk", 0.0))
+               for n in nodes.values())
+
+
+def _notify_done(cur_idx, new_idx, topup_dusk, target_dusk,
+                 sum_before=None, sum_after=None) -> None:
+    lines = [
+        "✅ Redistribution complete.",
+        f"New master: prov[{new_idx}] (~{topup_dusk:,.0f} DUSK, active next epoch)",
+        f"Freed node: prov[{cur_idx}] (ready for next redistribution)",
+        f"rot_master target: {target_dusk:,.0f} DUSK",
+    ]
+    if sum_before is not None and sum_after is not None:
+        delta = sum_after - sum_before
+        if delta < -1.0:
+            lines.append(f"⚠️ Stake sum {sum_before:,.0f} → {sum_after:,.0f} DUSK "
+                         f"(Δ {delta:+,.0f}) — DECREASED; stake left the nodes, "
+                         f"check the pool (recoverable) or it was snatched")
+        else:
+            lines.append(f"Stake sum {sum_before:,.0f} → {sum_after:,.0f} DUSK "
+                         f"(Δ {delta:+,.0f}) ✅ conserved")
+    _tg("alert_info", "\n".join(lines))
 
 
 def _notify_partial(cur_idx, new_idx) -> None:
