@@ -71,7 +71,9 @@ def _parse_profiles_addresses(output: str) -> dict:
 
 @bp.route("/api/provisioner/list", methods=["GET", "POST"])
 def provisioner_list():
-    pw = (request.get_json(silent=True) or {}).get("password", request.args.get("password", ""))
+    # Body/header only — never accept the password via query string, where it
+    # would land in access logs, browser history, and Referer headers.
+    pw = (request.get_json(silent=True) or {}).get("password", "") or get_password()
     return jsonify(wallet_cmd("profiles", timeout=15, password=pw))
 
 

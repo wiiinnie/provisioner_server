@@ -23,8 +23,48 @@ from .config import (
 _wallet_lock   = threading.Lock()
 _rotation_lock = threading.Lock()
 
+# ── Secret redaction ───────────────────────────────────────────────────────────
+# Masks wallet secrets in any command string before it is logged or returned to
+# a client. Two mechanisms, applied together so a miss in one is caught by the
+# other:
+#   1. value-based — replace the literal password wherever it appears. This is
+#      what catches --provisioner-password '<pw>', which the callers inline
+#      UNmasked (the outer --password was masked, this one was not).
+#   2. flag-based  — mask the argument that follows --password /
+#      --provisioner-password even when the value is unknown (e.g. inside
+#      run_cmd, which never sees the password variable).
+_SECRET_FLAG_RE = re.compile(
+    r"(--(?:provisioner-)?password[ =]+)('(?:[^']|'\\'')*'|\"[^\"]*\"|\S+)"
+)
+
+def _redact_secrets(text: str, password: str = "") -> str:
+    if not text:
+        return text
+    if password and len(password) >= 4:
+        text = text.replace(password, "***")
+    return _SECRET_FLAG_RE.sub(r"\1'***'", text)
+
+
 # ── Password cache ─────────────────────────────────────────────────────────────
-_cached_wallet_pw: str = ""
+# Two independent sources, deliberately kept apart:
+#   • _credential_pw — loaded once from the systemd LoadCredentialEncrypted mount.
+#     This is the headless/automation password; persistent by design so the
+#     rotation loop can sign every epoch with no human present.
+#   • _session_pw    — supplied by an authenticated dashboard request. TTL-bound
+#     so a password typed once is not reusable indefinitely by a later (e.g.
+#     unauthenticated / CSRF) caller. Refreshed on each supply.
+_credential_pw: str   = ""
+_credential_loaded    = False
+_session_pw: str      = ""
+_session_pw_ts: float = 0.0
+_pw_lock              = threading.Lock()
+
+# Session-password lifetime, seconds. 0 or negative disables expiry (back-compat).
+try:
+    _SESSION_PW_TTL = int(os.environ.get("SOZU_PW_CACHE_TTL_SEC", "3600"))
+except ValueError:
+    _SESSION_PW_TTL = 3600
+
 
 def _load_password_from_systemd_credential() -> str:
     """
@@ -48,20 +88,32 @@ def _load_password_from_systemd_credential() -> str:
         return ""
 
 
+def _session_pw_fresh() -> bool:
+    if not _session_pw:
+        return False
+    if _SESSION_PW_TTL <= 0:
+        return True
+    return (time.time() - _session_pw_ts) < _SESSION_PW_TTL
+
+
 def get_password() -> str:
     """
-    Return the cached wallet password.
+    Resolve the wallet password.
 
-    Resolution order:
-      1. In-memory cache (already populated for this process)
-      2. systemd credential at $CREDENTIALS_DIRECTORY/wallet_pw (headless mode)
-      3. Flask request body / X-Wallet-Password header (operator override)
+    Order:
+      1. A password carried on the current authenticated request (body
+         `password` or `X-Wallet-Password` header) — cached as the session
+         password and returned.
+      2. A fresh session password supplied earlier (within TTL).
+      3. The persistent systemd-credential password (headless mode).
     """
-    global _cached_wallet_pw
+    global _credential_pw, _credential_loaded, _session_pw, _session_pw_ts
 
-    # First call after process start: try the systemd credential.
-    if not _cached_wallet_pw:
-        _cached_wallet_pw = _load_password_from_systemd_credential()
+    if not _credential_loaded:
+        with _pw_lock:
+            if not _credential_loaded:
+                _credential_pw = _load_password_from_systemd_credential()
+                _credential_loaded = True
 
     try:
         from flask import has_request_context, request
@@ -69,16 +121,33 @@ def get_password() -> str:
             data = request.get_json(silent=True) or {}
             pw = data.get("password", "") or request.headers.get("X-Wallet-Password", "")
             if pw:
-                _cached_wallet_pw = pw
-            return _cached_wallet_pw
+                with _pw_lock:
+                    _session_pw = pw
+                    _session_pw_ts = time.time()
+                return pw
     except Exception:
         pass
-    return _cached_wallet_pw
+
+    if _session_pw_fresh():
+        return _session_pw
+    return _credential_pw
+
 
 def _cache_wallet_pw(pw: str) -> None:
-    global _cached_wallet_pw
+    global _session_pw, _session_pw_ts
     if pw:
-        _cached_wallet_pw = pw
+        with _pw_lock:
+            _session_pw = pw
+            _session_pw_ts = time.time()
+
+
+def clear_password() -> None:
+    """Drop the session password (logout). The systemd-credential password is
+    left intact so headless automation keeps working."""
+    global _session_pw, _session_pw_ts
+    with _pw_lock:
+        _session_pw = ""
+        _session_pw_ts = 0.0
 
 # ── ANSI stripping ─────────────────────────────────────────────────────────────
 def _strip_ansi(s: str) -> str:
@@ -101,7 +170,7 @@ def run_cmd(cmd: str, timeout: int = 30) -> dict:
             "stderr":      _strip_ansi(stderr).strip(),
             "returncode":  proc.returncode,
             "duration_ms": int((time.time() - t0) * 1000),
-            "cmd":         cmd,
+            "cmd":         _redact_secrets(cmd),
             "ts":          datetime.now().isoformat(),
         }
     except subprocess.TimeoutExpired:
@@ -113,7 +182,7 @@ def run_cmd(cmd: str, timeout: int = 30) -> dict:
         return {"ok": False, "stdout": "", "returncode": -1,
                 "stderr": f"timeout after {timeout}s",
                 "duration_ms": timeout * 1000,
-                "cmd": cmd, "ts": datetime.now().isoformat()}
+                "cmd": _redact_secrets(cmd), "ts": datetime.now().isoformat()}
     except Exception as exc:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -121,7 +190,7 @@ def run_cmd(cmd: str, timeout: int = 30) -> dict:
             proc.kill()
         return {"ok": False, "stdout": "", "returncode": -1,
                 "stderr": str(exc), "duration_ms": 0,
-                "cmd": cmd, "ts": datetime.now().isoformat()}
+                "cmd": _redact_secrets(cmd), "ts": datetime.now().isoformat()}
 
 # ── wallet_cmd ────────────────────────────────────────────────────────────────
 def wallet_cmd(subcmd: str, timeout: int = 30, password: str = "", gas_limit: int = 0) -> dict:
@@ -135,13 +204,16 @@ def wallet_cmd(subcmd: str, timeout: int = 30, password: str = "", gas_limit: in
     if password:
         safe_pw = password.replace("'", "'\\''")
         inner   = f"{WALLET_BIN} {_NET} --password '{safe_pw}'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
-        log_cmd = f"{WALLET_BIN} {_NET} --password '***'{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
     else:
         inner   = f"{WALLET_BIN} {_NET}{gp_flag}{gl_flag} -w {WALLET_PATH} {subcmd}"
-        log_cmd = inner
     with _wallet_lock:
         result = run_cmd(inner, timeout=timeout)
-    result["cmd"] = log_cmd
+    # Redact against the real command so any secret in `subcmd` (e.g.
+    # --provisioner-password) is masked too, not just the outer --password flag.
+    result["cmd"]    = _redact_secrets(inner, password)
+    # Defence in depth: mask the password if the CLI echoes its argv back on error.
+    result["stdout"] = _redact_secrets(result.get("stdout", ""), password)
+    result["stderr"] = _redact_secrets(result.get("stderr", ""), password)
     return result
 
 # ── operator_cmd ──────────────────────────────────────────────────────────────
@@ -187,10 +259,11 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
     if password:
         safe_pw = password.replace("'", "'\\''")
         cmd     = f"{WALLET_BIN} {_NET} --password '{safe_pw}'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
-        log_cmd = f"{WALLET_BIN} {_NET} --password '***'{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
     else:
         cmd     = f"{WALLET_BIN} {_NET}{gp_flag}{gl_flag} -w {OPERATOR_WALLET} {subcmd}"
-        log_cmd = cmd
+    # Redact against the real command so any secret in `subcmd` (e.g.
+    # --provisioner-password) is masked too, not just the outer --password flag.
+    log_cmd = _redact_secrets(cmd, password)
 
     _stripped = subcmd.strip()
     if _stripped.startswith("-n "):
@@ -202,6 +275,10 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
     with _lock:
         result = run_cmd(cmd, timeout=timeout)
     result["cmd"] = log_cmd
+    # Defence in depth: mask the password if the CLI echoes its argv back on
+    # error, before the output is returned or pushed to the command panel.
+    result["stdout"] = _redact_secrets(result.get("stdout", ""), password)
+    result["stderr"] = _redact_secrets(result.get("stderr", ""), password)
 
     _tx_hash = _extract_tx_hash(result.get("stdout", "") + result.get("stderr", ""))
     if _tx_hash:

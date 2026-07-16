@@ -13,7 +13,7 @@ from ..config import (
     WALLET_BIN, WALLET_PATH, NODE_INDICES, PORT,
     cfg, _cfg, _CONFIG_DEFAULTS, _load_config, _save_config,
 )
-from ..wallet import run_cmd, wallet_cmd, get_password, _cache_wallet_pw, OPERATOR_WALLET
+from ..wallet import run_cmd, wallet_cmd, get_password, _cache_wallet_pw, clear_password, OPERATOR_WALLET
 
 bp = Blueprint("system", __name__)
 
@@ -439,3 +439,12 @@ def password_status():
     from ..wallet import get_password
     pw = get_password()
     return jsonify({"set": bool(pw)})
+
+
+@bp.route("/api/password/clear", methods=["POST"])
+def password_clear():
+    """Drop the cached session password (logout). The persistent
+    systemd-credential password, if any, is left intact so headless automation
+    keeps working."""
+    clear_password()
+    return jsonify({"ok": True})
