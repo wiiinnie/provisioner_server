@@ -39,7 +39,8 @@ def index():
 
 @bp.route("/api/status")
 def status():
-    binary_ok = run_cmd(f"which {WALLET_BIN}")["ok"]
+    import shutil
+    binary_ok = shutil.which(WALLET_BIN) is not None
     from ..wallet import get_password
     return jsonify({
         "binary_found":  binary_ok,
@@ -144,6 +145,13 @@ def api_version():
 
 @bp.route("/api/debug/wallet", methods=["POST"])
 def debug_wallet():
+    # Diagnostic endpoint that runs arbitrary wallet subcommands. Even with
+    # shell=False (no RCE), it is disabled by default and must be explicitly
+    # enabled for a debugging session.
+    if os.environ.get("SOZU_ENABLE_DEBUG_WALLET") != "1":
+        return jsonify({"ok": False,
+                        "error": "debug endpoint disabled "
+                                 "(set SOZU_ENABLE_DEBUG_WALLET=1 to enable)"}), 403
     data    = request.get_json() or {}
     pw      = data.get("password", "")
     subcmd  = data.get("subcmd", "profiles")

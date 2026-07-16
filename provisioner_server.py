@@ -11,7 +11,6 @@ import os
 import secrets
 
 from flask import Flask, Response, request
-from flask_cors import CORS
 
 from lib.config import (
     _log, configure_werkzeug_logger,
@@ -20,11 +19,27 @@ from lib.config import (
 )
 
 app = Flask(__name__)
-CORS(app)
+# No CORS: the dashboard is served same-origin by this app (see routes/system.py
+# index()), so no cross-origin access is needed. A wildcard Access-Control-
+# Allow-Origin would invite any website to call the money-moving API.
 configure_werkzeug_logger()
 
-_AUTH_USER    = os.environ.get("SOZU_DASHBOARD_USER", "")
-_AUTH_PASS    = os.environ.get("SOZU_DASHBOARD_PASS", "")
+# ── Auth (fail closed) ─────────────────────────────────────────────────────────
+# The dashboard drives stake-moving endpoints, so it must never come up
+# unauthenticated by accident. If the credentials are unset we refuse to start,
+# unless SOZU_ALLOW_NO_AUTH=1 is set as a deliberate, documented override (only
+# ever acceptable on a loopback-only bind behind a tunnel — never on 0.0.0.0).
+_AUTH_USER     = os.environ.get("SOZU_DASHBOARD_USER", "")
+_AUTH_PASS     = os.environ.get("SOZU_DASHBOARD_PASS", "")
+_ALLOW_NO_AUTH = os.environ.get("SOZU_ALLOW_NO_AUTH") == "1"
+
+if not (_AUTH_USER and _AUTH_PASS) and not _ALLOW_NO_AUTH:
+    raise SystemExit(
+        "FATAL: SOZU_DASHBOARD_USER / SOZU_DASHBOARD_PASS are not set — refusing "
+        "to start without authentication. Set both, or set SOZU_ALLOW_NO_AUTH=1 "
+        "to override (never on a network-reachable bind)."
+    )
+
 _AUTH_ENABLED = bool(_AUTH_USER and _AUTH_PASS)
 
 

@@ -13,11 +13,29 @@ from ..config import (
     _NET, NETWORK_ID, OPERATOR_ADDRESS, CONTRACT_ID, RUSK_VERSION,
     GAS_LIMIT, GRAPHQL_URL, _NODE_STATE_URL, NODE_INDICES,
 )
-from ..wallet import operator_cmd, wallet_cmd, run_cmd, get_password, WALLET_BIN, OPERATOR_WALLET
+from ..wallet import operator_cmd, wallet_cmd, run_cmd, get_password, WALLET_BIN, OPERATOR_WALLET, valid_hex
 from ..assess import parse_stake_info, EPOCH_BLOCKS
 from ..assess import _stake_cache, _stake_cache_lock
 
 bp = Blueprint("info", __name__)
+
+
+def _valid_idx(v):
+    """Return int idx if it is a known node index, else None."""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v in NODE_INDICES else None
+
+
+def _valid_amount(v):
+    """Return positive float amount, else None."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
 
 
 # ── Stake info ────────────────────────────────────────────────────────────────
@@ -192,8 +210,8 @@ def track_transaction():
         tx_hash = (request.get_json() or {}).get("hash", "").strip()
     else:
         tx_hash = request.args.get("hash", "").strip()
-    if not tx_hash:
-        return jsonify({"ok": False, "stderr": "hash required"}), 400
+    if not valid_hex(tx_hash):
+        return jsonify({"ok": False, "stderr": "valid hex transaction hash required"}), 400
     cmd = f"{WALLET_BIN} -w {OPERATOR_WALLET} track --transaction {tx_hash} --format json"
     r   = run_cmd(cmd, timeout=120)
     stdout, stderr = r.get("stdout", "") or "", r.get("stderr", "") or ""
@@ -354,9 +372,12 @@ def provisioner_live():
 @bp.route("/api/stake", methods=["POST"])
 def stake():
     data   = request.get_json() or {}
-    idx, amount = data.get("idx"), data.get("amount")
-    if idx is None or amount is None:
-        return jsonify({"ok": False, "stderr": "missing idx or amount"}), 400
+    idx    = _valid_idx(data.get("idx"))
+    amount = _valid_amount(data.get("amount"))
+    if idx is None:
+        return jsonify({"ok": False, "stderr": f"idx must be one of {NODE_INDICES}"}), 400
+    if amount is None:
+        return jsonify({"ok": False, "stderr": "amount must be a positive number"}), 400
     return jsonify(wallet_cmd(f"--profile-idx {idx} stake --amt {amount}",
                               timeout=60, password=data.get("password", "")))
 
@@ -364,9 +385,9 @@ def stake():
 @bp.route("/api/unstake", methods=["POST"])
 def unstake():
     data = request.get_json() or {}
-    idx  = data.get("idx")
+    idx  = _valid_idx(data.get("idx"))
     if idx is None:
-        return jsonify({"ok": False, "stderr": "missing idx"}), 400
+        return jsonify({"ok": False, "stderr": f"idx must be one of {NODE_INDICES}"}), 400
     return jsonify(wallet_cmd(f"--profile-idx {idx} unstake",
                               timeout=60, password=data.get("password", "")))
 
@@ -374,8 +395,8 @@ def unstake():
 @bp.route("/api/withdraw_reward", methods=["POST"])
 def withdraw_reward():
     data = request.get_json() or {}
-    idx  = data.get("idx")
+    idx  = _valid_idx(data.get("idx"))
     if idx is None:
-        return jsonify({"ok": False, "stderr": "missing idx"}), 400
+        return jsonify({"ok": False, "stderr": f"idx must be one of {NODE_INDICES}"}), 400
     return jsonify(wallet_cmd(f"--profile-idx {idx} withdraw-reward",
                               timeout=60, password=data.get("password", "")))

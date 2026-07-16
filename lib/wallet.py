@@ -5,6 +5,7 @@ Imports: config only.
 """
 import os
 import re
+import shlex
 import signal
 import subprocess
 import threading
@@ -153,15 +154,53 @@ def clear_password() -> None:
 def _strip_ansi(s: str) -> str:
     return re.sub("\x1b[^a-zA-Z]*[a-zA-Z]|\r", "", s)
 
+# ── Input validation ──────────────────────────────────────────────────────────
+# Boundary checks for values that get interpolated into a command. With
+# shell=False (below) these are defence-in-depth, not the sole barrier, but they
+# reject junk early and give callers a clean 400 instead of a wallet-CLI error.
+_ADDR_RE = re.compile(r"^[A-Za-z0-9]{40,120}$")
+_HEX_RE  = re.compile(r"^[0-9a-fA-F]{32,128}$")
+
+def valid_addr(a: str) -> bool:
+    return bool(a and _ADDR_RE.match(a))
+
+def valid_hex(h: str) -> bool:
+    return bool(h and _HEX_RE.match(h))
+
 # ── run_cmd ───────────────────────────────────────────────────────────────────
 def run_cmd(cmd: str, timeout: int = 30) -> dict:
-    """Run a shell command, return {ok, stdout, stderr, returncode, duration_ms}.
-    Uses start_new_session=True so on timeout the whole process group is killed."""
+    """Run a command WITHOUT a shell and return
+    {ok, stdout, stderr, returncode, duration_ms}.
+
+    The command string is tokenised with shlex.split and executed via
+    shell=False, so metacharacters (; | & $() ` etc.) injected into an
+    interpolated value are inert — they become literal argv tokens the wallet
+    CLI simply rejects, never shell syntax. start_new_session=True keeps the
+    process-group kill-on-timeout behaviour.
+    """
     t0 = time.time()
-    proc = subprocess.Popen(
-        cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True,
-    )
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as exc:
+        return {"ok": False, "stdout": "", "returncode": -1,
+                "stderr": f"invalid command quoting: {exc}",
+                "duration_ms": 0,
+                "cmd": _redact_secrets(cmd), "ts": datetime.now().isoformat()}
+    if not argv:
+        return {"ok": False, "stdout": "", "returncode": -1,
+                "stderr": "empty command", "duration_ms": 0,
+                "cmd": _redact_secrets(cmd), "ts": datetime.now().isoformat()}
+    try:
+        proc = subprocess.Popen(
+            argv, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
+    except OSError as exc:
+        # e.g. binary not found / not executable. shell=True used to surface
+        # this as a non-zero return; keep that shape instead of raising.
+        return {"ok": False, "stdout": "", "returncode": -1,
+                "stderr": f"failed to launch: {exc}", "duration_ms": 0,
+                "cmd": _redact_secrets(cmd), "ts": datetime.now().isoformat()}
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         return {

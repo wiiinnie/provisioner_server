@@ -12,7 +12,7 @@ from ..config import (
     _NET, OPERATOR_ADDRESS, NODE_INDICES, RUSK_VERSION, GRAPHQL_URL,
     cfg, _load_config, _save_config,
 )
-from ..wallet import operator_cmd, wallet_cmd, get_password, WALLET_PATH
+from ..wallet import operator_cmd, wallet_cmd, get_password, WALLET_PATH, valid_addr
 from ..assess import (
     parse_stake_info, _fetch_capacity, _stake_headroom,
     _stake_cache, _stake_cache_lock,
@@ -93,8 +93,8 @@ def provisioner_add_provisioner():
     if not pw:
         pw = get_password()
     prov = data.get("provisioner_address", "")
-    if not prov:
-        return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
+    if not valid_addr(prov):
+        return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
     r = operator_cmd(
         f"pool add-provisioner --skip-confirmation "
         f"--operator {OPERATOR_ADDRESS()} --provisioner {prov}",
@@ -165,6 +165,9 @@ def provisioner_allocate_stake():
         return jsonify({"ok": False,
                         "stderr": f"Provisioner address for prov[{idx}] not found. "
                                   f"Set prov_{idx}_address in config."}), 400
+    if not valid_addr(prov_addr):
+        return jsonify({"ok": False,
+                        "stderr": f"Provisioner address for prov[{idx}] is malformed."}), 400
 
     r = operator_cmd(
         f"pool stake-activate --skip-confirmation "
@@ -183,8 +186,8 @@ def provisioner_deactivate_stake():
     if not pw:
         pw = get_password()
     prov = data.get("provisioner_address", "")
-    if not prov:
-        return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
+    if not valid_addr(prov):
+        return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
     r = operator_cmd(f"pool stake-deactivate --skip-confirmation --provisioner {prov}",
                      timeout=90, password=pw)
     return jsonify({"ok": r["ok"], **r})
@@ -198,8 +201,8 @@ def provisioner_liquidate():
     if not pw:
         pw = get_password()
     prov = data.get("provisioner_address", "")
-    if not prov:
-        return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
+    if not valid_addr(prov):
+        return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
     r = operator_cmd(f"pool liquidate --skip-confirmation --provisioner {prov}",
                      timeout=90, password=pw)
     return jsonify({"ok": r["ok"], "step": "complete", "results": {"liquidate": r}})
@@ -212,8 +215,8 @@ def provisioner_terminate():
     if not pw:
         pw = get_password()
     prov = data.get("provisioner_address", "")
-    if not prov:
-        return jsonify({"ok": False, "stderr": "provisioner_address required"}), 400
+    if not valid_addr(prov):
+        return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
     r = operator_cmd(f"pool terminate --skip-confirmation --provisioner {prov}",
                      timeout=90, password=pw)
     return jsonify({"ok": r["ok"], "step": "complete", "results": {"terminate": r}})
@@ -228,8 +231,15 @@ def provisioner_remove_provisioner():
     prov = data.get("provisioner_address", "")
     op   = data.get("operator_address", OPERATOR_ADDRESS())
     idx  = data.get("provisioner_idx")
-    if not prov or not op:
-        return jsonify({"ok": False, "stderr": "provisioner_address and operator_address required"}), 400
+    if not valid_addr(prov) or not valid_addr(op):
+        return jsonify({"ok": False, "stderr": "valid provisioner_address and operator_address required"}), 400
+    if idx is not None:
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "stderr": "provisioner_idx must be an integer"}), 400
+        if idx not in NODE_INDICES:
+            return jsonify({"ok": False, "stderr": f"provisioner_idx out of range {NODE_INDICES}"}), 400
 
     results, status, has_stake = {}, None, False
     if idx is not None:
