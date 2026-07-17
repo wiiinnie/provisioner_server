@@ -158,7 +158,8 @@ def _strip_ansi(s: str) -> str:
 # Boundary checks for values that get interpolated into a command. With
 # shell=False (below) these are defence-in-depth, not the sole barrier, but they
 # reject junk early and give callers a clean 400 instead of a wallet-CLI error.
-_ADDR_RE = re.compile(r"^[A-Za-z0-9]{40,120}$")
+# Upper bound must fit provisioner BLS keys: 96 bytes → ~131-132 chars base58.
+_ADDR_RE = re.compile(r"^[A-Za-z0-9]{40,150}$")
 _HEX_RE  = re.compile(r"^[0-9a-fA-F]{32,128}$")
 
 def valid_addr(a: str) -> bool:
