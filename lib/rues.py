@@ -216,9 +216,14 @@ def _decode_fn_args_inplace(parsed: dict) -> None:
     """Walk a decoded tx dict, find fn_args fields and decode them via the driver endpoint.
     Modifies parsed in-place, adding a '_fn_args_decoded' key alongside fn_args.
     Handles both tx/included (call at top level) and tx/executed (call under 'inner').
+
+    Decoding is routed to the driver of the contract the tx actually targets.
+    Txs against contracts we have no driver for (e.g. every mainnet staker's
+    stake/unstake/withdraw on the genesis stake contract) are skipped —
+    asking the pool driver for those made rusk log a 500 per tx.
     """
     import base64 as _b64, subprocess as _sp
-    from .config import _NODE_STATE_URL, CONTRACT_ID
+    from .config import _NODE_STATE_URL, CONTRACT_ID, _SOZU_NET_CFG
 
     # Find the call dict — either top-level or under 'inner'
     call = parsed.get("call") or (parsed.get("inner") or {}).get("call")
@@ -230,10 +235,21 @@ def _decode_fn_args_inplace(parsed: dict) -> None:
     if not fn_name or not fn_args:
         return
 
+    # Route to the target contract's driver; skip contracts without one.
+    target = str(call.get("contract") or call.get("contract_id") or "").lower()
+    if target.startswith("0x"):
+        target = target[2:]
+    known = {str(_SOZU_NET_CFG.get(k) or "").lower()
+             for k in ("pool", "hub", "relayer", "substrate")} - {""}
+    if not target:
+        target = CONTRACT_ID  # old payload shape without a contract field
+    elif target not in known:
+        return
+
     try:
         raw_bytes = _b64.b64decode(fn_args)
         hex_val   = "0x" + raw_bytes.hex()
-        url = f"{_NODE_STATE_URL}/on/driver:{CONTRACT_ID}/decode_input_fn:{fn_name}"
+        url = f"{_NODE_STATE_URL}/on/driver:{target}/decode_input_fn:{fn_name}"
         r = _sp.run(
             ["curl", "-s", "-X", "POST", url,
              "-H", f"rusk-version: {RUSK_VERSION}",
