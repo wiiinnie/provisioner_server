@@ -2420,8 +2420,9 @@ _pollNodeHeights()
 })()
 
 // Config modal: recompute the rotation/snatch window hint text from the
-// current input values. Both values are blk_left thresholds: snatch spans
-// blk_left 1..snatch, rotation spans blk_left snatch+1..rot.
+// current input values. Both values are blk_left thresholds ("T−N"): snatch
+// spans blk_left 1..snatch, rotation spans blk_left snatch+1..rot. Block
+// positions are shown as height % 2160 (0-based, epoch spans 0..2159).
 function updateCfgWindowHints() {
   const EPOCH_BLOCKS = 2160
   const rot    = parseInt(document.getElementById('cfg-rotation')?.value) || 41
@@ -2430,11 +2431,11 @@ function updateCfgWindowHints() {
   const snHint  = document.getElementById('cfg-snatch-hint')
   if (rotHint) {
     rotHint.textContent = rot > snatch
-      ? `blocks ${EPOCH_BLOCKS - rot + 1}–${EPOCH_BLOCKS - snatch} (blk_left ${snatch + 1}–${rot}) — ${rot - snatch} blocks`
+      ? `opens T−${rot} — height%2160 ${EPOCH_BLOCKS - rot}–${EPOCH_BLOCKS - 1 - snatch} (blk_left ${rot}→${snatch + 1}) — ${rot - snatch} blocks`
       : '⚠ empty — rotation must be greater than snatch'
   }
   if (snHint) {
-    snHint.textContent = `blocks ${EPOCH_BLOCKS - snatch + 1}–${EPOCH_BLOCKS} (blk_left 1–${snatch}) — ${snatch} blocks`
+    snHint.textContent = `opens T−${snatch} — height%2160 ${EPOCH_BLOCKS - snatch}–${EPOCH_BLOCKS - 1} (blk_left ${snatch}→1) — ${snatch} blocks`
   }
 }
 
@@ -3549,10 +3550,10 @@ setInterval(() => {
 
 
 
-      <label style="font-size:11px;color:var(--muted);">Rotation Window (blocks)<br><span id="cfg-rotation-hint" style="font-size:10px;color:var(--dim)">blocks 2120–2149 (blk_left 12–41)</span></label>
+      <label style="font-size:11px;color:var(--muted);">Rotation Window (blocks)<br><span id="cfg-rotation-hint" style="font-size:10px;color:var(--dim)">opens T−41 — height%2160 2119–2148 (blk_left 41→12) — 30 blocks</span></label>
       <input class="modal-input" id="cfg-rotation" type="number" style="margin:0;" placeholder="100" oninput="updateCfgWindowHints()">
 
-      <label style="font-size:11px;color:var(--muted);">Snatch Window (blocks)<br><span id="cfg-snatch-hint" style="font-size:10px;color:var(--dim)">blocks 2150–2160 (blk_left 1–11)</span></label>
+      <label style="font-size:11px;color:var(--muted);">Snatch Window (blocks)<br><span id="cfg-snatch-hint" style="font-size:10px;color:var(--dim)">opens T−11 — height%2160 2149–2159 (blk_left 11→1) — 11 blocks</span></label>
       <input class="modal-input" id="cfg-snatch" type="number" style="margin:0;" placeholder="50" oninput="updateCfgWindowHints()">
 
       <label style="font-size:11px;color:var(--muted);">Backfill Blocks<br><span style="font-size:10px;color:var(--dim)">Blocks to scan on poller startup</span></label>
