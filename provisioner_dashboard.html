@@ -1944,6 +1944,7 @@ async function loadConfig() {
     }
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11
+    updateCfgWindowHints()
     document.getElementById('cfg-backfill').value       = _cfg.backfill_blocks ?? 200
     document.getElementById('cfg-node-state-url').value = _cfg.node_state_url || ''
     // ── Master Heal config ──
@@ -2417,6 +2418,25 @@ _pollNodeHeights()
   })
   document.addEventListener('mouseup', () => { dragging = false; document.body.style.userSelect = '' })
 })()
+
+// Config modal: recompute the rotation/snatch window hint text from the
+// current input values. Both values are blk_left thresholds: snatch spans
+// blk_left 1..snatch, rotation spans blk_left snatch+1..rot.
+function updateCfgWindowHints() {
+  const EPOCH_BLOCKS = 2160
+  const rot    = parseInt(document.getElementById('cfg-rotation')?.value) || 41
+  const snatch = parseInt(document.getElementById('cfg-snatch')?.value)   || 11
+  const rotHint = document.getElementById('cfg-rotation-hint')
+  const snHint  = document.getElementById('cfg-snatch-hint')
+  if (rotHint) {
+    rotHint.textContent = rot > snatch
+      ? `blocks ${EPOCH_BLOCKS - rot + 1}–${EPOCH_BLOCKS - snatch} (blk_left ${snatch + 1}–${rot}) — ${rot - snatch} blocks`
+      : '⚠ empty — rotation must be greater than snatch'
+  }
+  if (snHint) {
+    snHint.textContent = `blocks ${EPOCH_BLOCKS - snatch + 1}–${EPOCH_BLOCKS} (blk_left 1–${snatch}) — ${snatch} blocks`
+  }
+}
 
 function _renderEpochMonitor(epoch, blkLeft, rotWin, snatchWin) {
   const EPOCH_BLOCKS = 2160
@@ -3529,11 +3549,11 @@ setInterval(() => {
 
 
 
-      <label style="font-size:11px;color:var(--muted);">Rotation Window (blocks)<br><span style="font-size:10px;color:var(--dim)">blocks 2120–2149 (blk_left 12–41)</span></label>
-      <input class="modal-input" id="cfg-rotation" type="number" style="margin:0;" placeholder="100">
+      <label style="font-size:11px;color:var(--muted);">Rotation Window (blocks)<br><span id="cfg-rotation-hint" style="font-size:10px;color:var(--dim)">blocks 2120–2149 (blk_left 12–41)</span></label>
+      <input class="modal-input" id="cfg-rotation" type="number" style="margin:0;" placeholder="100" oninput="updateCfgWindowHints()">
 
-      <label style="font-size:11px;color:var(--muted);">Snatch Window (blocks)<br><span style="font-size:10px;color:var(--dim)">blocks 2150–2160 (blk_left 1–11)</span></label>
-      <input class="modal-input" id="cfg-snatch" type="number" style="margin:0;" placeholder="50">
+      <label style="font-size:11px;color:var(--muted);">Snatch Window (blocks)<br><span id="cfg-snatch-hint" style="font-size:10px;color:var(--dim)">blocks 2150–2160 (blk_left 1–11)</span></label>
+      <input class="modal-input" id="cfg-snatch" type="number" style="margin:0;" placeholder="50" oninput="updateCfgWindowHints()">
 
       <label style="font-size:11px;color:var(--muted);">Backfill Blocks<br><span style="font-size:10px;color:var(--dim)">Blocks to scan on poller startup</span></label>
       <input class="modal-input" id="cfg-backfill" type="number" style="margin:0;" placeholder="200">
