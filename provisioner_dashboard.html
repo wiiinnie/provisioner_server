@@ -1953,6 +1953,7 @@ async function loadConfig() {
     _cfg = await r.json()
     document.getElementById('cfg-network-id').value   = _cfg.network_id ?? 2
     document.getElementById('cfg-contract').value     = _cfg.contract_address ?? ''
+    document.getElementById('cfg-stake-contract').value = _cfg.stake_contract_id ?? ''  // [slash_events]
     document.getElementById('cfg-operator').value     = _cfg.operator_address ?? ''
     // Node log paths
     if (document.getElementById('cfg-node0-log')) {
@@ -2020,6 +2021,7 @@ async function saveConfig() {
   const payload = {
     network_id:           parseInt(document.getElementById('cfg-network-id').value),
     contract_address:     document.getElementById('cfg-contract').value.trim(),
+    stake_contract_id:    document.getElementById('cfg-stake-contract').value.trim(),  // [slash_events]
     operator_address:     document.getElementById('cfg-operator').value.trim(),
     node_0_log:           document.getElementById('cfg-node0-log')?.value.trim() || '/var/log/rusk-1.log',
     node_1_log:           document.getElementById('cfg-node1-log')?.value.trim() || '/var/log/rusk-2.log',
@@ -3579,6 +3581,10 @@ setInterval(() => {
 
       <label style="font-size:11px;color:var(--muted);">Contract Address</label>
       <input class="modal-input" id="cfg-contract" type="text" style="margin:0;" placeholder="72883945ac1aa032a…">
+
+      <!-- [slash_events] genesis stake contract id (slash event subscriptions) -->
+      <label style="font-size:11px;color:var(--muted);">Stake Contract Address<br><span style="font-size:10px;color:var(--dim)">genesis stake contract (slash events) — restart required</span></label>
+      <input class="modal-input" id="cfg-stake-contract" type="text" style="margin:0;" placeholder="0200000000000000000000000000000000000000000000000000000000000000">
 
       <label style="font-size:11px;color:var(--muted);">Operator Address</label>
       <input class="modal-input" id="cfg-operator" type="text" style="margin:0;" placeholder="BLS public key (base58)">

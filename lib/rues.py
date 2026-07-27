@@ -126,9 +126,9 @@ DEFAULT_SUBSCRIBE = list(TOPIC_PATHS.keys())
 
 
 def _path(key: str) -> str:
-    from .config import CONTRACT_ID, STAKE_CONTRACT_ID
+    from .config import CONTRACT_ID, STAKE_CONTRACT_ADDRESS
     return (TOPIC_PATHS[key]
-            .replace("{stake_cid}", STAKE_CONTRACT_ID)
+            .replace("{stake_cid}", STAKE_CONTRACT_ADDRESS())
             .replace("{cid}", CONTRACT_ID))
 
 

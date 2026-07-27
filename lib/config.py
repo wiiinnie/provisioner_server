@@ -122,7 +122,9 @@ CONTRACT_ID     = _SOZU_NET_CFG["pool"]
 # [slash_events] Dusk genesis stake contract — provisioner records (stake,
 # eligibility, faults) live here; slash/hard_slash events are emitted here,
 # NOT by the pool contract. Same id on testnet and mainnet.
-STAKE_CONTRACT_ID = "0200000000000000000000000000000000000000000000000000000000000002"
+# dusk-core: STAKE_CONTRACT = reserved(0x2) — first byte 0x02, rest zeros.
+# Overridable via dashboard config key "stake_contract_id".
+STAKE_CONTRACT_ID = "0200000000000000000000000000000000000000000000000000000000000000"
 
 # ── Dashboard config ───────────────────────────────────────────────────────────
 _CONFIG_PATH       = os.path.expanduser("~/.sozu_dashboard_config.json")
@@ -133,6 +135,7 @@ _CONFIG_DEFAULTS = {
     "node_state_url":          "",   # override _NODE_STATE_URL when set; restart required
     "network_id":              2,
     "contract_address":        CONTRACT_ID,
+    "stake_contract_id":       STAKE_CONTRACT_ID,  # [slash_events]
     "operator_address":        "",
     "prov_0_address":          "",
     "prov_1_address":          "",
@@ -225,6 +228,7 @@ if _user_state_url:
     GRAPHQL_URL     = f"{_NODE_STATE_URL}/on/graphql/query"
     _log(f"[config] node_state_url override active: {_NODE_STATE_URL}")
 def CONTRACT_ADDRESS(): return cfg("contract_address") or CONTRACT_ID
+def STAKE_CONTRACT_ADDRESS(): return (cfg("stake_contract_id") or "").strip() or STAKE_CONTRACT_ID  # [slash_events]
 def OPERATOR_ADDRESS(): return cfg("operator_address")
 def NETWORK_ID():       return cfg("network_id") or 2
 def GAS_LIMIT():        return int(cfg("gas_limit") or 2000000)

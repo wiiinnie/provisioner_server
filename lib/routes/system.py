@@ -184,7 +184,7 @@ def set_config():
     bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause] [config_whitelist_fix]
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct",
                   "master_alert_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
-    str_keys   = ("contract_address","operator_address",
+    str_keys   = ("contract_address","stake_contract_id","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
                   "node_0_log","node_1_log","node_2_log","node_3_log",
                   "telegram_bot_token","telegram_chat_id","node_state_url")
