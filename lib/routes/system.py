@@ -180,10 +180,10 @@ def set_config():
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port",
-                  "sweeper_delay_blocks","max_harvest_deferrals")  # [config_whitelist_fix]
-    bool_keys  = ("sweeper_enabled", "deposit_race_paused", "master_heal_enabled",)  # [deposit_race_pause] [config_whitelist_fix]
-    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct", "min_viable_master_dusk",
-                  "master_alert_threshold_pct","master_heal_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
+                  "sweeper_delay_blocks")  # [config_whitelist_fix]
+    bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause] [config_whitelist_fix]
+    float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct",
+                  "master_alert_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
     str_keys   = ("contract_address","operator_address",
                   "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
                   "node_0_log","node_1_log","node_2_log","node_3_log",

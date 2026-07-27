@@ -47,11 +47,11 @@ RUSK_VERSION    = "1.5"
 NODE_INDICES    = [0, 1, 2, 3]
 
 # ── Architecture invariant: provisioner role split ───────────────────────
-# prov[0] and prov[1] are the master pair (heal-managed only).
+# prov[0] and prov[1] are the master pair (redistribute-managed only).
 # prov[2] and prov[3] are the rotation pair (rotation-managed only).
-# These sets are disjoint and constant. Heal owns MASTER_PAIR, rotation
-# and deposit-race code owns ROTATION_PAIR. Mixing them produces the kind
-# of standby-leakage bug fixed in this branch.
+# These sets are disjoint and constant. Redistribute owns MASTER_PAIR,
+# rotation and deposit-race code owns ROTATION_PAIR. Mixing them produces
+# the kind of standby-leakage bug fixed in this branch.
 MASTER_PAIR     = (0, 1)
 ROTATION_PAIR   = (2, 3)
 PORT            = 7373
@@ -145,12 +145,8 @@ _CONFIG_DEFAULTS = {
     "snatch_window":           11,
     "backfill_blocks":         200,
     "master_idx":              -1,
-    "master_heal_enabled":         True,  # master-heal auto-trigger enabled
     "master_alert_threshold_pct":  70.0,  # TG alert at X% of target_master
-    "master_heal_threshold_pct":   50.0,  # heal triggers at X% of target_master
     "rotation_floor_pct":          20.0,  # rot_active target = max_cap × X %
-    "max_harvest_deferrals":       3,  # defers when unstake-target; force-run at cap
-    "min_viable_master_dusk":     0.0,    # circuit breaker; 0=disabled. heal refuses to trigger if target_master < this
     "locked_max_pct":              2.0,  # max combined locked stake as % of active_maximum (auto-synced from chain once per epoch)
     "master_threshold_pct":    15.0,   # alert when prov0 stake < X% of active_maximum
     "telegram_bot_token":      "",
@@ -158,14 +154,6 @@ _CONFIG_DEFAULTS = {
     # [notification_rework] per-alert enable/disable toggles
     "notification_settings": {
         "master_below_alert_threshold": True,
-        "heal_triggered":               True,
-        "heal_seeded":                  True,
-        "heal_deferred":                True,
-        "heal_force_run":               True,
-        "heal_harvest_complete":        True,
-        "heal_complete":                True,
-        "heal_failed":                  True,
-        "insufficient_operator_stake":  True,
         "rotation_failed":              True,
         "rotation_success":             True,
     },

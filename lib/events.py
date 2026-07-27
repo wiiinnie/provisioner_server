@@ -261,7 +261,7 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
 def _pick_target(window: str = "regular") -> tuple:
     """
     Target for deposit race allocation, scoped to ROTATION_PAIR=(2,3) by
-    architectural invariant (lib/config.py). Master pair is heal-managed and
+    architectural invariant (lib/config.py). Master pair is redistribute-managed and
     must never receive deposit-race allocations.
 
       Priority 1: rot_active (ta=0) — immediate effect, capacity+slash checked
@@ -376,7 +376,7 @@ def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None
         # race against competitors. Protective value here is low: a deposit just
         # landed (pool capacity INCREASED) and amount_lux is already capped to
         # available_lux. Rare panic case = one wasted tx, same as losing the
-        # race. Keep clamp for slow paths (rotation/sweeper/heal).
+        # race. Keep clamp for slow paths (rotation/sweeper).
         # Invalidate cache NOW before firing so concurrent threads re-fetch fresh capacity
         _invalidate_capacity_cache()
     except Exception as _cap_err:

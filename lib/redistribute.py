@@ -33,7 +33,7 @@ Epoch N   (rotation window): normal rotation runs, PLUS pre-seed new_master
 Boundary  N→N+1: new_master ta 2 → 1.
 Epoch N+1 (rotation window, before snatch): the consolidate OWNS the whole
           window (normal rotation is skipped) and runs the full 7-tx sequence,
-          mirroring heal's harvest ordering:
+          one tx at a time with confirm + block-gap between dependent txs:
     1. confirm new_master is ta==1 (no-master guard)
     2. liquidate + terminate cur_master → pool
     3. liquidate + terminate rot_master (rot_active) → pool   (frees the excess)
@@ -53,7 +53,7 @@ GUARDS
 - Fronting-target defer: if the node we'd pre-seed sits at/ahead of the current
   master in the unstake fronting order AND we are the unstake target this epoch,
   the 1k pre-seed would be eaten. Defer to a later epoch. Reuses
-  heal.is_unstake_target_this_epoch().
+  fronting.is_unstake_target_this_epoch().
 - No-master: never liquidate cur_master until new_master is confirmed ta==1.
 - Snatch window: all epoch-N+1 txs must complete before the snatch window
   (blk_left <= snatch_win) so liquidated stake is never exposed to the grab.
@@ -70,8 +70,8 @@ must not be stranded in the pool through the snatch window. Recovery ladder:
     4. any node (even inactive → 2 epochs)        — safe, slower
 Idle for 2 epochs beats losing master stake in the snatch race.
 
-This module owns state file ~/.sozu_redistribute.json and mirrors the heal.py
-persistence + logging conventions. It is driven from rotation._run_rotation
+This module owns state file ~/.sozu_redistribute.json (JSON snapshot +
+append log, same conventions as rotation). It is driven from rotation._run_rotation
 via two hooks (preseed at epoch N, consolidate at epoch N+1).
 """
 
@@ -117,7 +117,7 @@ _rd_log        = []
 _rd_log_lock   = threading.Lock()
 
 
-# ── Logging (mirrors heal.py) ─────────────────────────────────────────────────
+# ── Logging ─────────────────────────────────────────────────────────────────
 def _rdlog(msg: str, level: str = "info") -> None:
     line = {"ts": time.time(), "level": level, "msg": msg}
     with _rd_log_lock:
@@ -297,19 +297,6 @@ def wants_preseed(cur_epoch: int) -> bool:
             _rdlog_warn("preseed check: could not resolve new_master — deferring")
             return False
 
-        # Single-owner guard: heal and redistribute both target the master-pair
-        # standby (prov[new_master_idx]). If a heal cycle is mid-flight on the
-        # same node, its seed/harvest would corrupt our maturation clock and
-        # liquidate the master out from under us (the epoch-1743 skip). Defer.
-        try:
-            from .heal import is_in_progress, get_status as _heal_status
-            if is_in_progress() and _heal_status().get("standby_idx") == new_master_idx:
-                _rdlog_warn(f"preseed deferred: heal is mid-cycle on prov[{new_master_idx}] "
-                            f"(standby) — waiting for heal to clear before touching it")
-                return False
-        except Exception as _he:
-            _rdlog_warn(f"preseed: heal-ownership check failed ({_he}) — proceeding cautiously")
-
         # It must currently be inactive (a clean landing zone).
         new_status = nodes.get(new_master_idx, {}).get("status")
         if new_status != "inactive":
@@ -321,7 +308,7 @@ def wants_preseed(cur_epoch: int) -> bool:
         # are the unstake target this epoch.
         if _new_master_exposed_to_fronting(new_master_idx, cur_master_idx):
             try:
-                from .heal import is_unstake_target_this_epoch
+                from .fronting import is_unstake_target_this_epoch
                 if is_unstake_target_this_epoch(cur_epoch):
                     _rdlog_warn(f"preseed deferred: prov[{new_master_idx}] is the fronting node "
                                 f"and we are the unstake target this epoch — the 1k seed would be "
@@ -481,8 +468,8 @@ def _pool_tx_confirmed(R, kind: str, addr: str,
 
 
 def perform_consolidate(cur_epoch: int) -> bool:
-    """The epoch-N+1 consolidate. Owns the ENTIRE rotation window (like heal's
-    harvest): it liquidates BOTH rot_master and cur_master so the pool actually
+    """The epoch-N+1 consolidate. Owns the ENTIRE rotation window (normal
+    rotation is skipped): it liquidates BOTH rot_master and cur_master so the pool actually
     holds the excess, tops up new_master (ta==1) with excess + master (no slash),
     brings rot_slave up to `target` as the next rot_master, and re-seeds
     rot_active. The normal rotation body is skipped for this epoch.

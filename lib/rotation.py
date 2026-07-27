@@ -285,13 +285,13 @@ def _master_idx() -> int:
         (auto-correct cfg if stored hint disagreed)
       - Both active (anomalous) → return the one with more stake_dusk
         (auto-correct cfg)
-      - Neither active (mid-heal, transition states) → return stored hint
+      - Neither active (mid-consolidate, transition states) → return stored hint
       - _stake_cache empty (dashboard just booted, no fetch yet) → stored hint
 
     The cfg["master_idx"] field is treated as a cache; the source of truth
     is the chain. This guards against drift from any code path that
-    changes role state outside the heal flow (rotation events, manual
-    operations, slashing, terminate-without-heal, etc.).
+    changes role state outside the consolidate flow (rotation events, manual
+    operations, slashing, external terminates, etc.).
     """
     stored = cfg("master_idx")
     try:
@@ -320,7 +320,7 @@ def _master_idx() -> int:
         # Both active (rare / anomalous) — master is the one with more stake
         actual = max(active_members, key=lambda t: t[1])[0]
     else:
-        # Neither active (mid-heal or transition) — trust the stored hint
+        # Neither active (mid-consolidate or transition) — trust the stored hint
         return stored
 
     # Drift detected — auto-correct the cached hint
@@ -345,9 +345,9 @@ def _rot_indices() -> list[int]:
 
     The split between MASTER_PAIR=(0,1) and ROTATION_PAIR=(2,3) is an
     architectural invariant defined in lib/config.py — it does NOT depend on
-    which of {0,1} is currently the active master. Heal owns MASTER_PAIR;
+    which of {0,1} is currently the active master. Redistribute owns MASTER_PAIR;
     rotation and deposit-race code own ROTATION_PAIR. Mixing them caused the
-    standby-leakage bug where, with master_idx=1, the heal-managed standby
+    standby-leakage bug where, with master_idx=1, the master-pair standby
     prov[0] could be picked up as a rotation candidate.
     """
     return list(ROTATION_PAIR)
@@ -425,13 +425,6 @@ def _detect_and_log_state() -> None:
 def on_block(block_height: int) -> None:
     global _sweep_delta
     _log(f"[rotation] on_block called height={block_height}")
-
-    # ── HEAL hook: per-block heal tick (role swap on epoch boundary) ──────────
-    try:
-        from .heal import tick_heal
-        tick_heal(block_height)
-    except Exception as _heal_err:
-        _log(f"[rotation] heal tick error: {_heal_err}")
 
     with _state_lock:
         enabled = _rotation_state["enabled"]
@@ -534,24 +527,8 @@ def _run_snatch(cur_epoch: int, blk_left: int) -> None:
     """
     Fires on first block of snatch window. No candidate wait — act immediately.
     Only targets ta=1 (rot_slave) — no slash, active next epoch.
-
-    Heal coordination: if heal is mid-cycle (HARVESTING / FAILED with pending
-    pool), snatch must NOT drain the pool — heal expects to allocate the freed
-    stake to the standby master in the same window. Pool stays untouched until
-    heal returns to IDLE/COMPLETING/SEEDED.
     """
     try:
-        # Heal coordination: skip snatch while heal is mid-harvest or in failed state.
-        try:
-            from .heal import get_state, HARVESTING, FAILED
-            heal_state = get_state()
-            if heal_state in (HARVESTING, FAILED):
-                _rlog_warn(f"snatch window: heal state={heal_state} — skipping to "
-                           f"preserve pool for heal allocation/recovery")
-                return
-        except Exception as _heal_err:
-            _rlog_warn(f"snatch window: heal state check failed: {_heal_err} — proceeding")
-
         min_sweep = float(cfg("min_deposit_dusk") or 100.0)
         pool      = _pool_dusk()
         _rlog_info(f"snatch window: pool={pool:.4f} DUSK")
@@ -730,9 +707,9 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
             from .assess import _fetch_capacity_cached as _fcc
             master_idx = _master_idx()
             if master_idx >= 0:
-                # v2 heal: two-threshold model (alert + heal), both applied to
-                # target_master. Backward-compat: fall back to old master_threshold_pct.
-                # target_master is operator-relative (same formula as heal.py):
+                # Alert-only threshold (heal automation removed — refunding the
+                # master is a manual redistribute). Backward-compat: fall back
+                # to old master_threshold_pct. target_master is operator-relative:
                 # bounded by both the protocol ceiling and what the operator's
                 # total redistributable stake can realistically support.
                 cap           = _fcc(_pw())
@@ -758,15 +735,11 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                 alert_pct = float(cfg("master_alert_threshold_pct")
                                   or cfg("master_threshold_pct")
                                   or 70.0)
-                heal_pct  = float(cfg("master_heal_threshold_pct")
-                                  or cfg("master_threshold_pct")
-                                  or 50.0)
 
                 master_node   = nodes.get(master_idx, {})
                 master_stake  = master_node.get("stake_dusk", 0.0)
 
                 alert_dusk = target_master * alert_pct / 100.0
-                heal_dusk  = target_master * heal_pct  / 100.0
 
                 master_lux = round(master_stake * 1e9)
                 alert_lux  = round(alert_dusk   * 1e9)
@@ -775,20 +748,7 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
                     _rlog_warn(f"master prov[{master_idx}] stake {master_stake:,.2f} DUSK "
                                f"< alert threshold {alert_dusk:,.2f} DUSK "
                                f"({alert_pct:.0f}% of target_master={target_master:,.0f}) — "
-                               f"checking heal state and sending alert")
-                    # ── HEAL first: check_threshold_and_trigger may advance heal state
-                    # to AWAITING_N if stake also crossed the lower heal threshold.
-                    # Calling heal BEFORE the alert lets the alert reflect the
-                    # accurate post-trigger state in its message wording.
-                    try:
-                        from .heal import check_threshold_and_trigger
-                        from .pool import _fast_alloc_pool
-                        check_threshold_and_trigger(
-                            master_idx, master_stake, active_max, _fast_alloc_pool())
-                    except Exception as _heal_err:
-                        _rlog_warn(f"heal trigger error: {_heal_err}")
-                    # ── Now send the TG alert; alert_master_below_threshold reads
-                    # current heal state and tailors the message accordingly.
+                               f"sending alert")
                     try:
                         from .telegram import alert_master_below_threshold
                         alert_master_below_threshold(
@@ -1374,17 +1334,6 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[3/3] prov[{smaller_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
 
-    # ── HEAL hook: in epoch N during A:2 recovery, append standby seed ──
-    # Same heal hook as normal rotation — A:2 still consumes the rotation
-    # window, so heal's epoch-N seed should fire here too.
-    try:
-        from .heal import wants_epoch_n_seed, perform_epoch_n_seed
-        if wants_epoch_n_seed():
-            _rlog_step("heal: appending epoch-N seed of standby after A:2 recovery")
-            perform_epoch_n_seed(cur_epoch)
-    except Exception as _heal_err:
-        _rlog_warn(f"heal epoch-N seed hook error (A:2): {_heal_err}")
-
     _rlog_ok(f"─── A:2 recovery epoch {cur_epoch} complete ✓ ───")
     _rlog_info(f"next state: prov[{smaller_idx}] → ta=1 next epoch → healthy A:1 M:1")
     _set_state(ROTATING)
@@ -1413,18 +1362,6 @@ def _run_rotation(cur_epoch: int) -> None:
                     _set_state(ROTATING); _bump_epoch(cur_epoch); return
         except Exception as _rd_err:
             _rlog_warn(f"redistribute consolidate hook error: {_rd_err}")
-
-        # ── HEAL hook: in epoch N+1, heal takes the rotation window ─────
-        try:
-            from .heal import should_run_harvest, run_harvest
-            if should_run_harvest(cur_epoch):
-                _rlog_step(f"heal: running HARVEST in place of regular rotation")
-                run_harvest(cur_epoch)
-                _set_state(ROTATING)
-                _bump_epoch(cur_epoch)
-                return
-        except Exception as _heal_err:
-            _rlog_warn(f"heal harvest hook error: {_heal_err}")
 
         from .wallet import WALLET_PATH
         from .rues import register_tx_confirm, get_tx_confirm_result
@@ -1552,23 +1489,13 @@ def _run_rotation(cur_epoch: int) -> None:
         # No capacity cap here — rotation recycles existing stake, not new external DUSK.
         # active_current after liquidation = active_current before - (stake + locked),
         # and we re-allocate exactly that amount back. Net capacity change = zero.
-        # ── HEAL hook: if heal is awaiting its epoch-N standby seed, reserve an
-        # extra SEED_DUSK so the heal hook at end of rotation has something to fire.
-        heal_reserve = 0.0
-        try:
-            from .heal import wants_epoch_n_seed
-            if wants_epoch_n_seed():
-                heal_reserve = SEED_DUSK
-        except Exception:
-            pass
-        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK - heal_reserve)
+        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK)
         _rlog_step(f"[3/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
         _rlog_info(
             f"[3/4] liquidate freed {freed_by_liquidate:.4f} DUSK + "
             f"terminate freed {freed_by_terminate:.4f} DUSK - "
             f"seed {SEED_DUSK:.0f} DUSK"
-            + (f" - heal_reserve {heal_reserve:.0f} DUSK" if heal_reserve > 0 else "")
-            + f" = {alloc_dusk:.4f} DUSK to allocate")
+            f" = {alloc_dusk:.4f} DUSK to allocate")
 
         # [pool_balance_clamp] clamp to actual pool balance before activation
         from .pool import clamp_to_pool_balance
@@ -1619,18 +1546,6 @@ def _run_rotation(cur_epoch: int) -> None:
                 _rlog_info("[4/4] state check will retry seeding from pool on next tick")
                 _set_state(ROTATING); _bump_epoch(cur_epoch); return
             _rlog_ok(f"[4/4] prov[{rot_active_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
-
-        # ── HEAL hook: in epoch N, append one extra seed for standby master ──
-        # After rotation's step 4 confirms, if heal is awaiting the epoch-N seed,
-        # fire stake_activate on standby (perform_epoch_n_seed handles its own
-        # block-gap wait).
-        try:
-            from .heal import wants_epoch_n_seed, perform_epoch_n_seed
-            if wants_epoch_n_seed():
-                _rlog_step("heal: appending epoch-N seed of standby after rotation")
-                perform_epoch_n_seed(cur_epoch)
-        except Exception as _heal_err:
-            _rlog_warn(f"heal epoch-N seed hook error: {_heal_err}")
 
         # ── [redistribute] preseed hook (epoch N) ──────────────────────
         # After the normal rotation, if a redistribution is ARMED and this epoch

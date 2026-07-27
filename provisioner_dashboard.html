@@ -1947,19 +1947,14 @@ async function loadConfig() {
     updateCfgWindowHints()
     document.getElementById('cfg-backfill').value       = _cfg.backfill_blocks ?? 200
     document.getElementById('cfg-node-state-url').value = _cfg.node_state_url || ''
-    // ── Master Heal config ──
-    // Migration: if old master_threshold_pct exists and the new keys don't, use it
-    // as a sane default for master_heal_threshold_pct (alert gets +20 pts).
+    // ── Master threshold config ──
+    // Migration: if old master_threshold_pct exists and the new key doesn't,
+    // derive the alert threshold from it (+20 pts, capped at 90).
     const _oldMthr = _cfg.master_threshold_pct
-    const _healThr = _cfg.master_heal_threshold_pct ?? (_oldMthr != null ? _oldMthr : 50)
     const _alertThr = _cfg.master_alert_threshold_pct ?? (_oldMthr != null ? Math.min(_oldMthr + 20, 90) : 70)
-    const _healEnabled = _cfg.master_heal_enabled
-    document.getElementById('cfg-master-heal-enabled').checked = (_healEnabled !== false)   // default true
     document.getElementById('cfg-master-alert-threshold-pct').value = _alertThr
-    document.getElementById('cfg-master-heal-threshold-pct').value  = _healThr
     document.getElementById('cfg-rotation-floor-pct').value         = _cfg.rotation_floor_pct ?? 20
     document.getElementById('cfg-locked-max-pct').value = _cfg.locked_max_pct != null ? _cfg.locked_max_pct : 2.0
-    document.getElementById('cfg-max-harvest-deferrals').value      = _cfg.max_harvest_deferrals ?? 3
     document.getElementById('cfg-telegram-token').value  = _cfg.telegram_bot_token || ''
     document.getElementById('cfg-telegram-chatid').value = _cfg.telegram_chat_id || ''
     document.getElementById('cfg-min-deposit').value   = _cfg.min_deposit_dusk ?? 100
@@ -1976,9 +1971,7 @@ async function loadConfig() {
     const _notif = _cfg.notification_settings || {}
     const _alertKeys = [
       "rotation_success","rotation_failed",
-      "heal_triggered","heal_seeded","heal_harvest_complete","heal_complete",
-      "heal_deferred","heal_force_run","heal_failed",
-      "master_below_alert_threshold","insufficient_operator_stake"
+      "master_below_alert_threshold"
     ]
     for (const _k of _alertKeys) {
       const _el = document.getElementById(`cfg-notif-${_k}`)
@@ -2001,14 +1994,6 @@ async function loadConfig() {
 }
 
 async function saveConfig() {
-  // Validate: alert threshold must be >= heal threshold
-  const _alertPct = parseFloat(document.getElementById('cfg-master-alert-threshold-pct').value || '70')
-  const _healPct  = parseFloat(document.getElementById('cfg-master-heal-threshold-pct').value || '50')
-  if (_alertPct < _healPct) {
-    alert(`Alert threshold (${_alertPct}%) must be ≥ heal threshold (${_healPct}%).\n\n` +
-          `The alert should fire BEFORE heal triggers, so a higher percentage means earlier warning.`)
-    return
-  }
   const payload = {
     network_id:           parseInt(document.getElementById('cfg-network-id').value),
     contract_address:     document.getElementById('cfg-contract').value.trim(),
@@ -2029,12 +2014,9 @@ async function saveConfig() {
     prov_1_address:        document.getElementById('cfg-prov-1-address').value.trim(),
     prov_2_address:        document.getElementById('cfg-prov-2-address').value.trim(),
     prov_3_address:        document.getElementById('cfg-prov-3-address').value.trim(),
-    master_heal_enabled:      !!(document.getElementById('cfg-master-heal-enabled')?.checked),
     master_alert_threshold_pct: parseFloat(document.getElementById('cfg-master-alert-threshold-pct').value || '70'),
-    master_heal_threshold_pct:  parseFloat(document.getElementById('cfg-master-heal-threshold-pct').value || '50'),
     rotation_floor_pct:       parseFloat(document.getElementById('cfg-rotation-floor-pct').value || '20'),
       locked_max_pct: parseFloat(document.getElementById('cfg-locked-max-pct').value) || 2.0,
-    max_harvest_deferrals:    parseInt(document.getElementById('cfg-max-harvest-deferrals').value || '3'),
     telegram_chat_id:     document.getElementById('cfg-telegram-chatid').value.trim(),
     min_deposit_dusk:     parseFloat(document.getElementById('cfg-min-deposit').value || '100'),
     snatch_min_deposit_dusk: parseFloat(document.getElementById('cfg-snatch-min-deposit')?.value || '100'),
@@ -2047,15 +2029,7 @@ async function saveConfig() {
     notification_settings: {
       rotation_success:              !!document.getElementById('cfg-notif-rotation_success')?.checked,
       rotation_failed:               !!document.getElementById('cfg-notif-rotation_failed')?.checked,
-      heal_triggered:                !!document.getElementById('cfg-notif-heal_triggered')?.checked,
-      heal_seeded:                   !!document.getElementById('cfg-notif-heal_seeded')?.checked,
-      heal_harvest_complete:         !!document.getElementById('cfg-notif-heal_harvest_complete')?.checked,
-      heal_complete:                 !!document.getElementById('cfg-notif-heal_complete')?.checked,
-      heal_deferred:                 !!document.getElementById('cfg-notif-heal_deferred')?.checked,
-      heal_force_run:                !!document.getElementById('cfg-notif-heal_force_run')?.checked,
-      heal_failed:                   !!document.getElementById('cfg-notif-heal_failed')?.checked,
       master_below_alert_threshold:  !!document.getElementById('cfg-notif-master_below_alert_threshold')?.checked,
-      insufficient_operator_stake:   !!document.getElementById('cfg-notif-insufficient_operator_stake')?.checked,
     },
   }
   // Restart prompt if node_state_url changed
@@ -3602,19 +3576,10 @@ setInterval(() => {
 
 
 
-      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Master Heal</label>
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Master Thresholds</label>
 
-      <label style="font-size:11px;color:var(--muted);">Heal Enabled<br><span style="font-size:10px;color:var(--dim)">auto-trigger master replacement via standby when stake drops below heal threshold</span></label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-master-heal-enabled" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);">enable heal automation</span>
-      </div>
-
-      <label style="font-size:11px;color:var(--muted);">Alert Threshold (%)<br><span style="font-size:10px;color:var(--dim)">TG alert fires when master stake drops below X% of target_master (default 70)</span></label>
+      <label style="font-size:11px;color:var(--muted);">Alert Threshold (%)<br><span style="font-size:10px;color:var(--dim)">TG alert fires when master stake drops below X% of target_master (default 70) — re-fund via manual redistribute</span></label>
       <input class="modal-input" id="cfg-master-alert-threshold-pct" type="number" step="1" min="1" max="100" style="margin:0;" placeholder="70">
-
-      <label style="font-size:11px;color:var(--muted);">Heal Threshold (%)<br><span style="font-size:10px;color:var(--dim)">heal triggers when master stake drops below X% of target_master (default 50) — must be &lt; alert threshold</span></label>
-      <input class="modal-input" id="cfg-master-heal-threshold-pct" type="number" step="1" min="1" max="100" style="margin:0;" placeholder="50">
 
       <label style="font-size:11px;color:var(--muted);">Rotation Floor (%)<br><span style="font-size:10px;color:var(--dim)">rot_active reserved stake = max_capacity × X% (default 20). target_master = 100% − this.</span></label>
       <input class="modal-input" id="cfg-rotation-floor-pct" type="number" step="1" min="1" max="50" style="margin:0;" placeholder="20">
@@ -3623,8 +3588,6 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Slash Cap (% of max active stake)<br>
 <span style="font-size:10px;color:var(--dim)">chain protocol param — auto-synced once per epoch</span></label>
       <input class="modal-input" id="cfg-locked-max-pct" type="number" step="0.01" min="0" max="100" style="margin:0;" placeholder="2.0">
-      <label style="font-size:11px;color:var(--muted);">Max Harvest Deferrals<br><span style="font-size:10px;color:var(--dim)">consecutive harvest defers allowed when we are substrate unstake-target; force-run at this cap (default 3)</span></label>
-      <input class="modal-input" id="cfg-max-harvest-deferrals" type="number" step="1" min="0" max="20" style="margin:0;" placeholder="3">
 
       <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Telegram Alerts</label>
 
@@ -3654,64 +3617,12 @@ setInterval(() => {
         <button onclick="_testTelegram('rotation_failed')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
       </div>
 
-      <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Heal lifecycle —</label>
-      <label style="font-size:11px;color:var(--muted);">Heal triggered</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_triggered" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">master fell below heal threshold</span>
-        <button onclick="_testTelegram('heal_triggered')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-      <label style="font-size:11px;color:var(--muted);">Heal seeded</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_seeded" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">standby got 1k seed; maturing</span>
-        <button onclick="_testTelegram('heal_seeded')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-      <label style="font-size:11px;color:var(--muted);">Heal harvest complete</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_harvest_complete" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">role swap pending at epoch boundary</span>
-        <button onclick="_testTelegram('heal_harvest_complete')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-      <label style="font-size:11px;color:var(--muted);">Heal complete</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_complete" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">role swap done; heal idle</span>
-        <button onclick="_testTelegram('heal_complete')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-
-      <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Heal exceptions —</label>
-      <label style="font-size:11px;color:var(--muted);">Heal deferred</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_deferred" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">we’re substrate unstake target this epoch</span>
-        <button onclick="_testTelegram('heal_deferred')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-      <label style="font-size:11px;color:var(--muted);">Heal force-run</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_force_run" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">max deferrals hit; harvesting anyway</span>
-        <button onclick="_testTelegram('heal_force_run')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-      <label style="font-size:11px;color:var(--muted);">Heal failed</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-heal_failed" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">step failed; will retry on next crossing</span>
-        <button onclick="_testTelegram('heal_failed')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-
       <label style="font-size:10px;color:var(--dim);grid-column:1/-1;margin-top:4px;font-style:italic;">— Operator alerts —</label>
       <label style="font-size:11px;color:var(--muted);">Master below threshold</label>
       <div style="display:flex;align-items:center;gap:8px;">
         <input type="checkbox" id="cfg-notif-master_below_alert_threshold" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">stake below alert but above heal threshold</span>
+        <span style="font-size:10px;color:var(--dim);flex:1;">master stake below alert threshold — re-fund manually</span>
         <button onclick="_testTelegram('master_below_alert_threshold')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
-      </div>
-      <label style="font-size:11px;color:var(--muted);">Insufficient operator stake</label>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input type="checkbox" id="cfg-notif-insufficient_operator_stake" style="margin:0;">
-        <span style="font-size:10px;color:var(--dim);flex:1;">heal blocked; deposit more DUSK</span>
-        <button onclick="_testTelegram('insufficient_operator_stake')" style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border:1px solid var(--teal);border-radius:3px;background:transparent;color:var(--teal);cursor:pointer;white-space:nowrap;">test</button>
       </div>
 
 

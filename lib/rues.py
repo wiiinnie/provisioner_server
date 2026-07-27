@@ -69,8 +69,8 @@ def _signal_tx_confirms(fn_name: str, decoded: dict, prov_addr: str = "") -> Non
 
 
 # ── Block-reached registry ────────────────────────────────────────────────────
-# Used by heal harvest to wait N blocks between sequential txs (e.g. liquidate →
-# terminate needs a 2-block gap). Heal registers an Event keyed on target block;
+# Used by multi-tx sequences (redistribute consolidate) to wait N blocks between sequential txs (e.g. liquidate →
+# terminate needs a 2-block gap). Callers register an Event keyed on target block;
 # _signal_block_reached fires any events whose target is <= incoming block.
 
 # Latest block height observed via block_accepted — used as fallback when

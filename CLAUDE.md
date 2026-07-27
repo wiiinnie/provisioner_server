@@ -33,7 +33,7 @@ provisioner_server/
 ├── provisioner_dashboard.html   # single-file dashboard UI (HTML+CSS+JS, ~3600 lines)
 ├── lib/
 │   ├── rotation.py              # rotation state machine; on_block() dispatcher (LARGE, ~1700 lines)
-│   ├── heal.py                  # master-heal automation (SLATED FOR REMOVAL — see below)
+│   ├── fronting.py              # substrate unstake-target (fronting) check
 │   ├── redistribute.py          # manual consolidate-and-hop stake redistribution
 │   ├── pool.py                  # SOZU pool contract balance + clamp helper
 │   ├── assess.py                # per-node state assessment + operator capacity
@@ -54,7 +54,7 @@ provisioner_server/
 ### Nodes and roles
 - **4 provisioners**, indices `[0,1,2,3]`.
 - `MASTER_PAIR = (0, 1)` and `ROTATION_PAIR = (2, 3)` — **disjoint and
-  constant** architectural invariant (config.py). Heal/redistribute own the
+  constant** architectural invariant (config.py). Redistribute owns the
   master pair; rotation + deposit-race own the rotation pair. Mixing them
   caused a real "standby-leakage" bug historically — do not blur the split.
 - One master-pair node is the active **master** (`_master_idx()` in rotation.py
@@ -98,7 +98,7 @@ provisioner_server/
 ### Unstake / fronting order
 - Unstakes/withdrawals hit ONE operator per epoch, drawn from that operator's
   provisioners in **ascending node-index order** (node 0 first).
-- `heal.is_unstake_target_this_epoch(cur_epoch) -> bool` (cached per epoch,
+- `fronting.is_unstake_target_this_epoch(cur_epoch) -> bool` (cached per epoch,
   fail-open) tells whether we're the target. The biggest stake ideally sits in
   the lowest-index node to absorb unstakes without disturbing others.
 
@@ -134,19 +134,18 @@ if blk: wait_for_block(blk + 1, timeout=60)      # from lib.rues
 - `_assess()` returns `{by_idx: {idx: {address,status,ta,stake_dusk,locked_dusk,reward_dusk,...}}}`.
 - `_addr(idx, nodes)`, `_pw()`, `_pool_dusk()`, `_master_idx()`, `_rot_indices()`
   are the helpers redistribute reuses.
-- Logging: `_rlog_ok/warn/err/step/info` (rotation), `_hlog*` (heal),
-  `_rdlog*` (redistribute).
+- Logging: `_rlog_ok/warn/err/step/info` (rotation), `_rdlog*` (redistribute).
 
 ---
 
 ## Rotation (lib/rotation.py)
 
-- `on_block(block_height)` is the block-tick dispatcher. It calls `tick_heal`,
-  then gates on window position: precheck at `rot_win+5`, rotation at window
+- `on_block(block_height)` is the block-tick dispatcher. It gates on window
+  position: precheck at `rot_win+5`, rotation at window
   entry (`in_rot_win`), snatch sweeper at `blk_left == snatch_win`, periodic
   state checks every `STATE_CHECK_BLOCKS`.
 - `_run_rotation(cur_epoch)` runs the liquidate → (terminate) → activate
-  sequence for the rotation pair. It also hosts the heal + redistribute hooks.
+  sequence for the rotation pair. It also hosts the redistribute hooks.
 - Normal rotation: liquidate rot_active → pool, re-seed it 1k (→ new rot_slave),
   top up rot_slave with pool balance (→ new rot_active/rot_master at target).
 
@@ -171,8 +170,8 @@ no 5th node.
 
 ### Two-phase flow
 - **Epoch N (rotation window):** normal rotation runs, PLUS pre-seed `new_master`
-  with 1000 DUSK → ta=2. (`wants_preseed` / `perform_preseed`, hooked AFTER the
-  heal epoch-N seed hook in `_run_rotation`.)
+  with 1000 DUSK → ta=2. (`wants_preseed` / `perform_preseed`, hooked at the
+  end of `_run_rotation`.)
 - **Boundary N→N+1:** new_master ta 2 → 1.
 - **Epoch N+1 (rotation window, BEFORE snatch):** the consolidate
   (`wants_consolidate` / `perform_consolidate`, hooked at the TOP of
@@ -189,7 +188,7 @@ no 5th node.
 - **Fronting-target defer:** only pre-seed when new_master isn't exposed to
   fronting while we're the unstake target. Rule: exposed iff `new_idx <=
   cur_master_idx` (`_new_master_exposed_to_fronting`). Uses
-  `heal.is_unstake_target_this_epoch`.
+  `fronting.is_unstake_target_this_epoch`.
 - **ta==1 no-master precondition:** never liquidate cur_master until new_master
   is confirmed ta==1. Otherwise abort, master untouched, TG alert.
 - **Snatch-window timing:** `perform_consolidate` defers if `blk_left <=
@@ -208,8 +207,8 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 
 ### State machine + persistence
 - States: `IDLE → ARMED → PRESEEDED → (reset to IDLE)`.
-- State file `~/.sozu_redistribute.json`, log `~/.sozu_redistribute.log`
-  (mirrors heal.py conventions). `SEED_DUSK=1000`, `DEFAULT_TARGET_DUSK=1_000_000`,
+- State file `~/.sozu_redistribute.json`, log `~/.sozu_redistribute.log`.
+  `SEED_DUSK=1000`, `DEFAULT_TARGET_DUSK=1_000_000`,
   `TX_CONFIRM_TIMEOUT=120`, `TOPUP_RETRIES=2`.
 - Public API: `arm(target_dusk)`, `get_state()`, `get_status()`, `reset()`.
 
@@ -227,44 +226,37 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 
 ---
 
-## Heal (lib/heal.py) — SLATED FOR REMOVAL
+## Heal — REMOVED
 
-- Original automated master-replacement: multi-epoch state machine
-  (`AWAITING_N → SEEDED → HARVESTING → COMPLETING`), gated on
-  `cfg("master_heal_enabled")` at 3 sites (lines ~303/428/814). State file
-  `~/.sozu_heal.json`.
-- **Currently DISABLED** (`master_heal_enabled: false`) and state reset to idle.
-- **It conflicts with redistribution** — both manage the master-pair standby
-  node. A heal trigger during a redistribution grabbed prov[1] and is the likely
-  cause of the epoch-1743 consolidate skip (see Known issues).
-- **Plan: remove heal's action path entirely** once redistribution is confirmed
-  working. Keep at most a minimal safety-net (master → zero externally → seed
-  reserve 1k + TG alert), no multi-epoch machine.
-- Note: `heal_enabled` also appears in config but is **dead** — no source reads
-  it (only `master_heal_enabled` gates behavior). The `heal_*` booleans in
-  `notification_settings` are alert toggles, not action gates.
+- The automated master-replacement ("heal") state machine was removed entirely
+  (branch `remove-heal-automation`, 2026-07-27). Master re-funding is now
+  exclusively the manual redistribute flow.
+- What remains of it:
+  - `fronting.is_unstake_target_this_epoch` — extracted from heal.py; the only
+    heal symbol with a live consumer (redistribute's fronting guard).
+  - The **master low-stake TG alert** (`master_alert_threshold_pct`, alert key
+    `master_below_alert_threshold`) — alert-only, tells the operator to run a
+    manual redistribution.
+- Removed config keys (ignored if still present in a VPS's
+  `~/.sozu_dashboard_config.json`): `master_heal_enabled`,
+  `master_heal_threshold_pct`, `max_harvest_deferrals`,
+  `min_viable_master_dusk`, and the `heal_*` / `insufficient_operator_stake`
+  notification toggles. Stale `~/.sozu_heal.json` / `~/.sozu_heal.log` on the
+  VPSs are inert and can be deleted.
 
 ---
 
 ## Known issues / open work
 
-1. **Consolidate skipped epoch 1743.** Timeline: pre-seed ~epoch 1741 → prov[1]
-   ta=2; consolidate checked at 1742 (held, ta=2 correct) and 1744 (reset, ta=0
-   too late) but **never fired at 1743** (the ta==1 window). Most likely cause:
-   heal triggered concurrently and grabbed prov[1] (heal state showed
-   `failed: stake_activate tx/executed timeout`, `standby_idx: 1`). Heal is now
-   off; re-test to confirm the consolidate fires with heal disabled. If it still
-   skips, there's a redistribute-only timing bug in the hook/window logic.
-2. **Single-window brittleness.** Redistribution depends on the consolidate hook
+1. **Single-window brittleness.** Redistribution depends on the consolidate hook
    firing during exactly one epoch (ta==1). If that window is missed for any
    reason, the whole cycle fails and needs manual cleanup (an orphaned 1k active
    seed). Harden: detect the over-mature case and auto-liquidate the stranded
    seed + reset; consider a wider catch than "exactly ta==1".
-3. **Heal removal** (see above) — do before trusting redistribution unattended.
-4. **Rotation ↔ redistribute window contention.** Both run in the same epoch N+1
+2. **Rotation ↔ redistribute window contention.** Both run in the same epoch N+1
    window and share pool balance / capacity. Consolidate is ordered BEFORE the
    normal rotation body; verify on testnet they don't step on each other.
-5. **rusk 1.7.1 upgrade (deferred).** The multi-node installer
+3. **rusk 1.7.1 upgrade (deferred).** The multi-node installer
    (`node_installer_multi.sh`) can't be re-run for rusk 1.7.1: tag scheme changed
    to `dusk-rusk-<ver>`, a `-default` feature suffix is now mandatory, and a new
    `RUSK_CONSENSUS_SPIN_TIME` env var is required (mainnet 1781175600, testnet
@@ -312,9 +304,4 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 
 ## Good first tasks for Claude Code
 
-- Trace `redistribute.perform_consolidate` / `wants_consolidate` against
-  `rotation._run_rotation` and determine why epoch 1743 was skipped (heal
-  collision vs. timing bug). Read redistribute.py + rotation.py + heal.py together.
-- Design the heal removal: strip the action path, keep (or drop) a minimal
-  safety net, ensure nothing else imports the removed symbols.
-- Harden redistribute against a missed ta==1 window (issue #2).
+- Harden redistribute against a missed ta==1 window (issue #1).

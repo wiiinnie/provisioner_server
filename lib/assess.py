@@ -420,7 +420,7 @@ def compute_operator_total(state: dict, pool_dusk: float = 0.0) -> dict:
     Inactive provisioners contribute their locked/rewards but not stake_dusk
     (which is < MIN_STAKE_DUSK noise for inactive nodes).
 
-    Used by heal.check_threshold_and_trigger to compute an operator-relative
+    Used by the master threshold check and redistribute to compute an operator-relative
     target_master rather than anchoring the threshold to active_maximum, which
     would produce unreachable targets when operator deposits are below the
     protocol cap.
