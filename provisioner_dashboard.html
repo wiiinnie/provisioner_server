@@ -625,6 +625,11 @@
         <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">pool contract</span>
         <div id="rues-subs-contract" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
       </div>
+      <!-- [slash_events] genesis stake contract subscriptions -->
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">stake contract</span>
+        <div id="rues-subs-stake" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
+      </div>
       <div style="display:flex;align-items:center;gap:4px;">
         <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">transactions</span>
         <div id="rues-subs-tx" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
@@ -657,9 +662,18 @@
           <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">pool contract</span>
           <div id="rues-filters-contract" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
         </div>
+        <!-- [slash_events] stake contract filter row -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">stake contract</span>
+          <div id="rues-filters-stake" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
+        </div>
         <div style="display:flex;align-items:center;gap:4px;">
           <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">transactions</span>
           <div id="rues-filters-tx" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
+          <button id="rues-all-btn" onclick="_ruesToggleAllFilters()"
+            style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
+                   border-radius:3px;border:1px solid var(--border);color:var(--dim);
+                   background:var(--bg3);cursor:pointer;flex-shrink:0;">☑ all</button>
           <button id="rues-mine-btn" onclick="_ruesToggleMine()"
             style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
                    border-radius:3px;border:1px solid var(--border);color:var(--dim);
@@ -681,9 +695,18 @@
           <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">pool contract</span>
           <div id="rues-raw-filters-contract" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
         </div>
+        <!-- [slash_events] stake contract filter row -->
+        <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px;">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">stake contract</span>
+          <div id="rues-raw-filters-stake" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
+        </div>
         <div style="display:flex;align-items:center;gap:4px;">
           <span style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;width:60px;">transactions</span>
           <div id="rues-raw-filters-tx" style="display:flex;flex-wrap:wrap;gap:3px;flex:1;"></div>
+          <button id="rues-raw-all-btn" onclick="_ruesRawToggleAllFilters()"
+            style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
+                   border-radius:3px;border:1px solid var(--border);color:var(--dim);
+                   background:var(--bg3);cursor:pointer;flex-shrink:0;">☑ all</button>
           <button id="rues-raw-mine-btn" onclick="_ruesToggleMine()"
             style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
                    border-radius:3px;border:1px solid var(--border);color:var(--dim);
@@ -2678,7 +2701,9 @@ const _BLOCKS_TOPICS   = ['block_accepted']
 const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','liquidate','reward','unstake','capacity_update']
 const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
 const _TX_TOPICS       = ['tx/included','tx/executed']
-const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._TX_TOPICS]
+// [slash_events] genesis stake contract topics
+const _STAKE_TOPICS    = ['slash','hard_slash']
+const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._STAKE_TOPICS, ..._TX_TOPICS]
 // Display labels
 const _TOPIC_LABELS = {}
 // Raw tab: URL segment → internal key (fixes the broken mapping)
@@ -2694,6 +2719,8 @@ const _SEG_TO_KEY = {
   'reward/terminate': 'reward/terminate',
   'unstake':    'unstake',
   'update_operator_max_capacity': 'capacity_update',
+  'slash':      'slash',
+  'hard_slash': 'hard_slash',
   'included':   'tx/included',
   'executed':   'tx/executed',
 }
@@ -2785,7 +2812,7 @@ async function _pollRues() {
     // Refresh provisioner cards when a stake-changing event for OUR provisioners
     // is detected. Filter by own addresses so unrelated network activity doesn't
     // trigger expensive wallet refreshes.
-    const _STAKE_CHANGE_TOPICS = new Set(['activate','liquidate','deactivate','unstake','terminate','reward'])
+    const _STAKE_CHANGE_TOPICS = new Set(['activate','liquidate','deactivate','unstake','terminate','reward','slash','hard_slash'])
     const _newOwnEvent = (d.log || [])
       .filter(e => _STAKE_CHANGE_TOPICS.has(e.topic))
       .filter(e => _containsOwnAddr(JSON.stringify(e.decoded || '')))
@@ -2809,10 +2836,13 @@ async function _pollRues() {
     }
     const rawBlEl = document.getElementById('rues-raw-filters-blocks')
     const rawCoEl = document.getElementById('rues-raw-filters-contract')
+    const rawStEl = document.getElementById('rues-raw-filters-stake')
     const rawTxEl = document.getElementById('rues-raw-filters-tx')
     if (rawBlEl) rawBlEl.innerHTML = _BLOCKS_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     if (rawCoEl) rawCoEl.innerHTML = _FILTER_CONTRACT_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
+    if (rawStEl) rawStEl.innerHTML = _STAKE_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     if (rawTxEl) rawTxEl.innerHTML = _TX_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
+    _updateAllBtn('rues-raw-all-btn', _ruesRawShowSet, 'var(--yellow)')
 
     // ── Raw tab log ───────────────────────────────────────────────────────────
     const rawEl = document.getElementById('rues-raw-log')
@@ -2915,9 +2945,11 @@ async function _pollRues() {
     }
     const sbEl = document.getElementById('rues-subs-blocks')
     const scEl = document.getElementById('rues-subs-contract')
+    const skEl = document.getElementById('rues-subs-stake')
     const stEl = document.getElementById('rues-subs-tx')
     if (sbEl) sbEl.innerHTML = _BLOCKS_TOPICS.map(_subChip).join('')
     if (scEl) scEl.innerHTML = _CONTRACT_TOPICS.map(_subChip).join('')
+    if (skEl) skEl.innerHTML = _STAKE_TOPICS.map(_subChip).join('')
     if (stEl) stEl.innerHTML = _TX_TOPICS.map(_subChip).join('')
 
     // Events tab filter chips — 3 rows
@@ -2931,10 +2963,13 @@ async function _pollRues() {
     }
     const evBlEl = document.getElementById('rues-filters-blocks')
     const evCoEl = document.getElementById('rues-filters-contract')
+    const evStEl = document.getElementById('rues-filters-stake')
     const evTxEl = document.getElementById('rues-filters-tx')
     if (evBlEl) evBlEl.innerHTML = _BLOCKS_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     if (evCoEl) evCoEl.innerHTML = _FILTER_CONTRACT_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
+    if (evStEl) evStEl.innerHTML = _STAKE_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     if (evTxEl) evTxEl.innerHTML = _TX_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
+    _updateAllBtn('rues-all-btn', _ruesShowSet, 'var(--teal)')
 
     // Event log — apply filter (virtual filters check decoded.operation for reward events)
     const logEl = document.getElementById('rues-log')
@@ -2965,6 +3000,7 @@ async function _pollRues() {
           const pStr = e.payload_len ? ` (${e.payload_len}B)` : ''
           const col  = e.topic === 'block_accepted' ? 'var(--cyan)'
                      : e.topic.startsWith('tx/')    ? 'var(--yellow)'
+                     : (e.topic === 'slash' || e.topic === 'hard_slash') ? 'var(--red)'
                      :                                'var(--teal)'
           const topicLabel = (e.topic === 'reward' && e.decoded && e.decoded.operation)
             ? `reward · ${e.decoded.operation}` : e.topic
@@ -3123,6 +3159,31 @@ function _ruesToggleFilter(topic) {
 
 function _ruesRawToggleFilter(topic) {
   _showToggle(topic, _ruesRawShowSet, s => { _ruesRawShowSet = s })
+}
+
+// [slash_events] check/uncheck-all filter toggle (per tab)
+function _ruesAllShown(showSet) {
+  return _ALL_FILTER_TOPICS.every(t => showSet ? showSet.has(t) : !_DEFAULT_HIDDEN.has(t))
+}
+
+function _updateAllBtn(id, showSet, color) {
+  const btn = document.getElementById(id)
+  if (!btn) return
+  const all = _ruesAllShown(showSet)
+  btn.textContent  = all ? '☐ none' : '☑ all'
+  btn.title        = all ? 'hide all topics' : 'show all topics'
+  btn.style.color  = all ? color : 'var(--dim)'
+  btn.style.border = all ? `1px solid ${color}` : '1px solid var(--border)'
+}
+
+function _ruesToggleAllFilters() {
+  _ruesShowSet = _ruesAllShown(_ruesShowSet) ? new Set() : new Set(_ALL_FILTER_TOPICS)
+  _pollRues()
+}
+
+function _ruesRawToggleAllFilters() {
+  _ruesRawShowSet = _ruesAllShown(_ruesRawShowSet) ? new Set() : new Set(_ALL_FILTER_TOPICS)
+  _pollRues()
 }
 
 async function _ruesToggleSub(topic) {

@@ -119,6 +119,11 @@ _NODE_STATE_URL = _SOZU_NET_CFG["state"]
 GRAPHQL_URL     = f"{_NODE_STATE_URL}/on/graphql/query"
 CONTRACT_ID     = _SOZU_NET_CFG["pool"]
 
+# [slash_events] Dusk genesis stake contract — provisioner records (stake,
+# eligibility, faults) live here; slash/hard_slash events are emitted here,
+# NOT by the pool contract. Same id on testnet and mainnet.
+STAKE_CONTRACT_ID = "0200000000000000000000000000000000000000000000000000000000000002"
+
 # ── Dashboard config ───────────────────────────────────────────────────────────
 _CONFIG_PATH       = os.path.expanduser("~/.sozu_dashboard_config.json")
 _ROTATION_LOG_PATH = os.path.expanduser("~/.sozu_rotation.log")

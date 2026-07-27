@@ -113,6 +113,9 @@ TOPIC_PATHS = {
     "reward":           "/on/contracts:{cid}/reward",
     "unstake":          "/on/contracts:{cid}/unstake",
     "capacity_update":  "/on/contracts:{cid}/update_operator_max_capacity",
+    # [slash_events] genesis stake contract topics (provisioner slashing)
+    "slash":            "/on/contracts:{stake_cid}/slash",
+    "hard_slash":       "/on/contracts:{stake_cid}/hard_slash",
     "tx/included":      "/on/transactions/included",
     "tx/executed":      "/on/transactions/executed",
 }
@@ -123,8 +126,10 @@ DEFAULT_SUBSCRIBE = list(TOPIC_PATHS.keys())
 
 
 def _path(key: str) -> str:
-    from .config import CONTRACT_ID
-    return TOPIC_PATHS[key].replace("{cid}", CONTRACT_ID)
+    from .config import CONTRACT_ID, STAKE_CONTRACT_ID
+    return (TOPIC_PATHS[key]
+            .replace("{stake_cid}", STAKE_CONTRACT_ID)
+            .replace("{cid}", CONTRACT_ID))
 
 
 # Reverse map: URL path suffix -> display key
@@ -320,8 +325,15 @@ def _decode_payload(location: str, payload: bytes) -> dict:
         try:
             import subprocess as _sp
             from .config import _NODE_STATE_URL, CONTRACT_ID
+            # [slash_events] decode against the contract that emitted the event
+            # (slash/hard_slash come from the genesis stake contract, not the pool)
+            emitter = CONTRACT_ID
+            for seg in loc.split("/"):
+                if seg.startswith("contracts:"):
+                    emitter = seg.split(":", 1)[1]
+                    break
             hex_val = "0x" + payload.hex()
-            url     = f"{_NODE_STATE_URL}/on/driver:{CONTRACT_ID}/decode_event:{topic_name}"
+            url     = f"{_NODE_STATE_URL}/on/driver:{emitter}/decode_event:{topic_name}"
             r = _sp.run(
                 ["curl", "-s", "-X", "POST", url,
                  "-H", f"rusk-version: {RUSK_VERSION}",
