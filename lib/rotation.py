@@ -132,6 +132,19 @@ def _rlog_step(msg: str)  -> None: _rlog(msg, ok=None,  level="step")
 def _rlog_info(msg: str)  -> None: _rlog(msg, ok=None,  level="info")
 
 
+def _alert_rotation_failure(cur_epoch: int, step: str, detail: str, consequence: str) -> None:
+    """TG-alert a rotation failure (alert_key cooldown dedups repeats). Never raises."""
+    try:
+        from .telegram import alert_rotation_failed
+        alert_rotation_failed(
+            f"Epoch {cur_epoch} — <b>{step}</b>\n\n"
+            f"<b>Detail:</b> {detail}\n"
+            f"<b>Consequence:</b> {consequence}"
+        )
+    except Exception as _tg_err:
+        _rlog_warn(f"tg rotation-failed alert error: {_tg_err}")
+
+
 def _set_state(state: str) -> None:
     with _state_lock:
         prev = _rotation_state["state"]
@@ -1249,18 +1262,28 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
             liq_evt.set()
         else:
             _rlog_err(f"[1/3] liquidate FAILED: {err} — aborting A:2 recovery")
+            _alert_rotation_failure(cur_epoch, f"A:2 recovery: liquidate prov[{smaller_idx}] failed (CLI)",
+                                    err or "wallet CLI error",
+                                    "A:2 recovery aborted; pair stays in the abnormal A:2 state, retry next epoch")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
     else:
         _rlog_info("[1/3] liquidate tx sent — waiting for confirmation (120s)…")
 
     if not liq_evt.wait(timeout=120):
         _rlog_err("[1/3] liquidate confirmation timeout — aborting A:2 recovery")
+        _alert_rotation_failure(cur_epoch, f"A:2 recovery: liquidate prov[{smaller_idx}] confirmation timeout",
+                                "no tx/executed event within 120s",
+                                "A:2 recovery aborted; VERIFY on-chain whether the liquidate landed "
+                                "(stake may be sitting in the pool)")
         _set_state(ROTATING); _bump_epoch(cur_epoch); return
     # Verify on-chain err (tx made it to a block but may have reverted)
     _liq_res = get_tx_confirm_result("liquidate", addr)
     _liq_err = (_liq_res or {}).get("err")
     if _liq_err:
         _rlog_err(f"[1/3] liquidate REVERTED on-chain: {str(_liq_err)[:200]} — aborting A:2 recovery")
+        _alert_rotation_failure(cur_epoch, f"A:2 recovery: liquidate prov[{smaller_idx}] reverted on-chain",
+                                str(_liq_err)[:200],
+                                "A:2 recovery aborted; pair stays in the abnormal A:2 state, retry next epoch")
         _set_state(ROTATING); _bump_epoch(cur_epoch); return
     _rlog_ok(f"[1/3] liquidate confirmed — {stake_dusk + locked_dusk:.4f} DUSK freed to pool")
 
@@ -1322,6 +1345,10 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
     if not r_seed.get("ok"):
         _rlog_err(f"[3/3] re-seed FAILED (CLI): {r_seed.get('stderr','')[:300]}")
         _rlog_info("[3/3] state check will retry seeding from pool on next tick")
+        _alert_rotation_failure(cur_epoch, f"A:2 recovery: re-seed of prov[{smaller_idx}] failed (CLI)",
+                                r_seed.get('stderr','')[:200] or "wallet CLI error",
+                                "liquidated stake is in the pool but the node is not re-seeded — "
+                                "state check retries from pool")
         _set_state(ROTATING); _bump_epoch(cur_epoch); return
     _rlog_info("[3/3] re-seed tx sent — waiting for on-chain confirmation (120s)…")
     if not seed_evt.wait(timeout=120):
@@ -1331,6 +1358,10 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
         if (_a2_res or {}).get("err"):
             _rlog_err(f"[3/3] re-seed FAILED on-chain: {str(_a2_res['err'])[:200]}")
             _rlog_info("[3/3] state check will retry seeding from pool on next tick")
+            _alert_rotation_failure(cur_epoch, f"A:2 recovery: re-seed of prov[{smaller_idx}] reverted on-chain",
+                                    str(_a2_res['err'])[:200],
+                                    "liquidated stake is in the pool but the node is not re-seeded — "
+                                    "state check retries from pool")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[3/3] prov[{smaller_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
 
@@ -1379,6 +1410,9 @@ def _run_rotation(cur_epoch: int) -> None:
 
         if rot_active_idx is None:
             _rlog_warn("rotation: no rot_active (ta=0) — skipping (pre-check should have caught this)")
+            _alert_rotation_failure(cur_epoch, "rotation skipped: no rot_active (ta=0) node",
+                                    "neither rotation-pair node is active",
+                                    "no txs sent; investigate if this repeats next epoch")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
 
         if rot_slave_idx is None:
@@ -1390,6 +1424,9 @@ def _run_rotation(cur_epoch: int) -> None:
                 _run_rotation_a2(cur_epoch, smaller_idx, nodes)
                 return
             _rlog_warn("rotation: no rot_slave (ta=1) and not A:2 — skipping")
+            _alert_rotation_failure(cur_epoch, "rotation skipped: no rot_slave (ta=1) node",
+                                    "no maturing node to allocate to and not the A:2 pattern",
+                                    "no txs sent; rotation pair state unchanged this epoch")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
 
         rot_active_addr = _addr(rot_active_idx, nodes)
@@ -1420,18 +1457,28 @@ def _run_rotation(cur_epoch: int) -> None:
                 liq_evt.set()
             else:
                 _rlog_err(f"[1/4] liquidate FAILED: {err} — aborting rotation")
+                _alert_rotation_failure(cur_epoch, f"[1/4] liquidate prov[{rot_active_idx}] failed (CLI)",
+                                        err or "wallet CLI error",
+                                        "rotation aborted; stake untouched on the node, retry next epoch")
                 _set_state(ROTATING); _bump_epoch(cur_epoch); return
         else:
             _rlog_info(f"[1/4] liquidate tx sent — waiting for tx/executed confirmation (120s)…")
 
         if not liq_evt.wait(timeout=120):
             _rlog_err("[1/4] liquidate confirmation timeout — aborting rotation")
+            _alert_rotation_failure(cur_epoch, f"[1/4] liquidate prov[{rot_active_idx}] confirmation timeout",
+                                    "no tx/executed event within 120s",
+                                    "rotation aborted; VERIFY on-chain whether the liquidate landed "
+                                    "(stake may be sitting in the pool)")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         # Verify on-chain err (tx made it to a block but may have reverted)
         _liq_res = get_tx_confirm_result("liquidate", rot_active_addr)
         _liq_err = (_liq_res or {}).get("err")
         if _liq_err:
             _rlog_err(f"[1/4] liquidate REVERTED on-chain: {str(_liq_err)[:200]} — aborting rotation")
+            _alert_rotation_failure(cur_epoch, f"[1/4] liquidate prov[{rot_active_idx}] reverted on-chain",
+                                    str(_liq_err)[:200],
+                                    "rotation aborted; stake untouched on the node, retry next epoch")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_ok(f"[1/4] liquidate confirmed — {freed_by_liquidate:.4f} DUSK freed to pool")
 
@@ -1516,6 +1563,11 @@ def _run_rotation(cur_epoch: int) -> None:
                     if (_alloc_res or {}).get("err"):
                         _rlog_err(f"[3/4] allocation FAILED on-chain: {str(_alloc_res['err'])[:200]}")
                         _rlog_info("[3/4] remaining stake stays in pool — deposit race will handle it")
+                        _alert_rotation_failure(cur_epoch,
+                                                f"[3/4] allocation to rot_slave prov[{rot_slave_idx}] reverted on-chain",
+                                                str(_alloc_res['err'])[:200],
+                                                f"{alloc_dusk:,.0f} DUSK stranded in the pool — "
+                                                f"EXPOSED to the snatch window unless re-allocated")
                     else:
                         _rlog_ok(f"[3/4] {alloc_dusk:.4f} DUSK → prov[{rot_slave_idx}] (ta=1) confirmed")
                 else:
@@ -1523,6 +1575,11 @@ def _run_rotation(cur_epoch: int) -> None:
             else:
                 _rlog_err(f"[3/4] allocation failed (CLI): {r_alloc.get('stderr','')[:300]}")
                 _rlog_info("[3/4] remaining stake stays in pool — deposit race will handle it")
+                _alert_rotation_failure(cur_epoch,
+                                        f"[3/4] allocation to rot_slave prov[{rot_slave_idx}] failed (CLI)",
+                                        r_alloc.get('stderr','')[:200] or "wallet CLI error",
+                                        f"{alloc_dusk:,.0f} DUSK stranded in the pool — "
+                                        f"EXPOSED to the snatch window unless re-allocated")
 
         # ── Step 4: re-seed rot_active → ta=2 ────────────────────────────────
         _rlog_step(f"[4/4] re-seed prov[{rot_active_idx}] with {SEED_DUSK:.0f} DUSK → rot_seeded (ta=2)")
@@ -1535,6 +1592,10 @@ def _run_rotation(cur_epoch: int) -> None:
         if not r_seed.get("ok"):
             _rlog_err(f"[4/4] re-seed FAILED (CLI): {r_seed.get('stderr','')[:300]}")
             _rlog_info("[4/4] state check will retry seeding from pool on next tick")
+            _alert_rotation_failure(cur_epoch, f"[4/4] re-seed of prov[{rot_active_idx}] failed (CLI)",
+                                    r_seed.get('stderr','')[:200] or "wallet CLI error",
+                                    "no new rot_seeded node — state check retries; if it stays unseeded "
+                                    "the pair degrades to A:2 next epoch")
             _set_state(ROTATING); _bump_epoch(cur_epoch); return
         _rlog_info(f"[4/4] re-seed tx sent — waiting for on-chain confirmation (120s)…")
         if not seed_evt.wait(timeout=120):
@@ -1544,6 +1605,10 @@ def _run_rotation(cur_epoch: int) -> None:
             if (_seed_res or {}).get("err"):
                 _rlog_err(f"[4/4] re-seed FAILED on-chain: {str(_seed_res['err'])[:200]}")
                 _rlog_info("[4/4] state check will retry seeding from pool on next tick")
+                _alert_rotation_failure(cur_epoch, f"[4/4] re-seed of prov[{rot_active_idx}] reverted on-chain",
+                                        str(_seed_res['err'])[:200],
+                                        "no new rot_seeded node — state check retries; if it stays unseeded "
+                                        "the pair degrades to A:2 next epoch")
                 _set_state(ROTATING); _bump_epoch(cur_epoch); return
             _rlog_ok(f"[4/4] prov[{rot_active_idx}] re-seeded {SEED_DUSK:.0f} DUSK → ta=2 (confirmed)")
 
@@ -1633,6 +1698,8 @@ def _run_rotation(cur_epoch: int) -> None:
 
     except Exception as e:
         _rlog_err(f"rotation sequence error: {e}")
+        _alert_rotation_failure(cur_epoch, "rotation sequence crashed", str(e)[:200],
+                                "rotation incomplete this epoch — check the rotation log and node states")
         _set_state(ROTATING)
         _bump_epoch(cur_epoch)
 
