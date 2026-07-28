@@ -286,10 +286,15 @@ def provisioner_withdraw_rewards():
 
 @bp.route("/api/sozu/recycle", methods=["POST"])
 def sozu_recycle():
-    pw = (request.get_json() or {}).get("password", "")
-    r  = operator_cmd(f"pool recycle --format json",
+    data = request.get_json() or {}
+    pw   = data.get("password", "")
+    batch_flag = " --batch" if data.get("batch") else ""  # [batch]
+    r  = operator_cmd(f"pool recycle --skip-confirmation{batch_flag} --format json",
                       timeout=60, password=pw, gas_limit=GAS_LIMIT())
-    return jsonify({"ok": r["ok"], "stdout": r.get("stdout", ""),
+    if batch_flag and r["ok"]:
+        from .. import batchq
+        batchq.record("recycle")
+    return jsonify({"ok": r["ok"], "batched": bool(batch_flag), "stdout": r.get("stdout", ""),
                     "stderr": r.get("stderr", ""), "duration_ms": r.get("duration_ms", 0)})
 
 

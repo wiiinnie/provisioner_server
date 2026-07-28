@@ -17,6 +17,7 @@ from ..assess import (
     parse_stake_info, _fetch_capacity, _stake_headroom,
     _stake_cache, _stake_cache_lock,
 )
+from .. import batchq  # [batch]
 
 bp = Blueprint("actions", __name__)
 
@@ -169,14 +170,20 @@ def provisioner_allocate_stake():
         return jsonify({"ok": False,
                         "stderr": f"Provisioner address for prov[{idx}] is malformed."}), 400
 
+    # [batch] queue instead of propagating — lands with the rest of the batch
+    batch_flag = " --batch" if data.get("batch") else ""
     r = operator_cmd(
-        f"pool stake-activate --skip-confirmation "
+        f"pool stake-activate --skip-confirmation{batch_flag} "
         f"--amount {amount_lux} "
         f"--provisioner {prov_addr} "
         f"--provisioner-wallet {WALLET_PATH} "
         f"--provisioner-password '{pw}'",
         timeout=90, password=pw)
-    return jsonify({"ok": r["ok"], "amount_lux": amount_lux, "provisioner": prov_addr, **r})
+    if batch_flag and r["ok"]:
+        batchq.record("stake-activate", prov_idx=idx, provisioner=prov_addr,
+                      amount_dusk=amount_dusk)
+    return jsonify({"ok": r["ok"], "batched": bool(batch_flag),
+                    "amount_lux": amount_lux, "provisioner": prov_addr, **r})
 
 
 @bp.route("/api/provisioner/deactivate_stake", methods=["POST"])
@@ -188,9 +195,13 @@ def provisioner_deactivate_stake():
     prov = data.get("provisioner_address", "")
     if not valid_addr(prov):
         return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
-    r = operator_cmd(f"pool stake-deactivate --skip-confirmation --provisioner {prov}",
+    batch_flag = " --batch" if data.get("batch") else ""  # [batch]
+    r = operator_cmd(f"pool stake-deactivate --skip-confirmation{batch_flag} --provisioner {prov}",
                      timeout=90, password=pw)
-    return jsonify({"ok": r["ok"], **r})
+    if batch_flag and r["ok"]:
+        batchq.record("stake-deactivate", prov_idx=data.get("provisioner_idx"),
+                      provisioner=prov)
+    return jsonify({"ok": r["ok"], "batched": bool(batch_flag), **r})
 
 
 
@@ -203,9 +214,14 @@ def provisioner_liquidate():
     prov = data.get("provisioner_address", "")
     if not valid_addr(prov):
         return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
-    r = operator_cmd(f"pool liquidate --skip-confirmation --provisioner {prov}",
+    batch_flag = " --batch" if data.get("batch") else ""  # [batch]
+    r = operator_cmd(f"pool liquidate --skip-confirmation{batch_flag} --provisioner {prov}",
                      timeout=90, password=pw)
-    return jsonify({"ok": r["ok"], "step": "complete", "results": {"liquidate": r}})
+    if batch_flag and r["ok"]:
+        batchq.record("liquidate", prov_idx=data.get("provisioner_idx"),
+                      provisioner=prov)
+    return jsonify({"ok": r["ok"], "batched": bool(batch_flag),
+                    "step": "complete", "results": {"liquidate": r}})
 
 
 @bp.route("/api/provisioner/terminate", methods=["POST"])
@@ -217,9 +233,14 @@ def provisioner_terminate():
     prov = data.get("provisioner_address", "")
     if not valid_addr(prov):
         return jsonify({"ok": False, "stderr": "valid provisioner_address required"}), 400
-    r = operator_cmd(f"pool terminate --skip-confirmation --provisioner {prov}",
+    batch_flag = " --batch" if data.get("batch") else ""  # [batch]
+    r = operator_cmd(f"pool terminate --skip-confirmation{batch_flag} --provisioner {prov}",
                      timeout=90, password=pw)
-    return jsonify({"ok": r["ok"], "step": "complete", "results": {"terminate": r}})
+    if batch_flag and r["ok"]:
+        batchq.record("terminate", prov_idx=data.get("provisioner_idx"),
+                      provisioner=prov)
+    return jsonify({"ok": r["ok"], "batched": bool(batch_flag),
+                    "step": "complete", "results": {"terminate": r}})
 
 
 @bp.route("/api/provisioner/remove_provisioner", methods=["POST"])

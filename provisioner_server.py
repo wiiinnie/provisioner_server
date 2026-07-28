@@ -63,11 +63,13 @@ from lib.routes.system    import bp as system_bp
 from lib.routes.info      import bp as info_bp
 from lib.routes.actions   import bp as actions_bp
 from lib.routes.substrate import bp as substrate_bp
+from lib.routes.batch     import bp as batch_bp  # [batch]
 
 app.register_blueprint(system_bp)
 app.register_blueprint(info_bp)
 app.register_blueprint(actions_bp)
 app.register_blueprint(substrate_bp)
+app.register_blueprint(batch_bp)  # [batch]
 
 _started = False
 

@@ -443,6 +443,48 @@
   .mbtn-danger  { background: var(--red2); border-color: var(--red); color: var(--red); }
   .mbtn-danger:hover { background: #360f0f; }
 
+  /* [batch_ui] batch chip, queue-in-batch checkbox, batch panel rows */
+  .mbtn-batch { background: rgba(230,184,74,.12); border-color: var(--yellow); color: var(--yellow); }
+  .mbtn-batch:hover { background: rgba(230,184,74,.22); }
+  .batch-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: none; border: 1px solid var(--border); color: var(--dim);
+    padding: 4px 12px; border-radius: 4px; font-size: 11px; cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace; flex-shrink: 0;
+  }
+  .batch-chip .n { background: var(--bg3); color: var(--dim); border-radius: 3px;
+                   padding: 0 5px; font-weight: 700; }
+  .batch-chip.armed { background: rgba(230,184,74,.10); border-color: var(--yellow); color: var(--yellow); }
+  .batch-chip.armed .n { background: var(--yellow); color: #0a0c10; }
+  .batch-opt {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 9px 12px; border: 1px dashed var(--yellow); border-radius: 4px;
+    background: rgba(230,184,74,.05); margin-bottom: 12px;
+  }
+  .batch-opt input { accent-color: var(--yellow); width: 14px; height: 14px; }
+  .batch-opt .bt { font-size: 12px; color: var(--text); font-weight: 600; }
+  .batch-opt .bh { font-size: 10px; color: var(--muted); }
+  .bq-row {
+    display: flex; align-items: center; gap: 10px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 6px;
+  }
+  .bq-row .ord { color: var(--dim); width: 20px; }
+  .bq-row .act { color: var(--teal); width: 130px; }
+  .bq-row .tgt { color: var(--text); flex: 1; }
+  .bq-row .amt { color: var(--yellow); }
+  .batch-warn {
+    border: 1px solid rgba(255,140,66,.4); background: rgba(255,140,66,.06);
+    color: var(--orange); font-size: 11px; line-height: 1.5;
+    padding: 9px 12px; border-radius: 4px; margin: 12px 0;
+  }
+  .batch-cli {
+    font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted);
+    background: var(--bg1); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; margin-top: 4px; max-height: 140px; overflow: auto;
+    white-space: pre-wrap; word-break: break-all;
+  }
+
   /* ── COLLAPSIBLE PROV CARDS ── */
   .prov-card .prov-header-row {
     display: flex;
@@ -513,7 +555,7 @@
         <button class="nav-btn" onclick="openModal('modal-track')">track transaction</button>
         <button class="nav-btn nav-btn-action" onclick="cmdQueryOperatorRewards()">query operator rewards</button>
         <button class="nav-btn nav-btn-action" onclick="doWithdrawRewards()">withdraw rewards</button>
-        <button class="nav-btn nav-btn-action" onclick="cmdRecycle()">recycle</button>
+        <button class="nav-btn nav-btn-action" onclick="openModal('modal-recycle')">recycle</button>
       </div>
     </div>
     <div class="nav-row">
@@ -529,6 +571,11 @@
         <div style="width:1px;height:18px;background:var(--border);margin:0 6px;flex-shrink:0;"></div>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-add-prov')">add provisioner</button>
         <button class="nav-btn nav-btn-action" onclick="openModal('modal-remove')">remove provisioner</button>
+        <!-- [batch_ui] -->
+        <div style="flex:1"></div>
+        <span class="batch-chip" id="batch-chip" onclick="openBatchPanel()" title="queued batch transactions">
+          batch <span class="n" id="batch-chip-n">0</span> queued ▸
+        </span>
       </div>
     </div>
     <div class="nav-row">
@@ -978,9 +1025,15 @@
     <div id="alloc-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <input class="modal-input" id="alloc-amt" type="number" placeholder="Amount in DUSK per selected provisioner" min="1" style="margin-bottom:4px;">
     <div id="alloc-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
+    <!-- [batch_ui] -->
+    <label class="batch-opt">
+      <input type="checkbox" id="alloc-batch" onchange="_batchOptToggle('alloc','stake activate','mbtn mbtn-confirm')">
+      <span><span class="bt">queue in batch — don't send now</span><br>
+      <span class="bh">queued txs propagate together and land in the same block</span></span>
+    </label>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-alloc-stake')">cancel</button>
-      <button class="mbtn mbtn-confirm" onclick="doAllocateStake()">stake activate</button>
+      <button class="mbtn mbtn-confirm" id="alloc-confirm-btn" onclick="doAllocateStake()">stake activate</button>
     </div>
   </div>
 </div>
@@ -992,9 +1045,15 @@
     <div class="modal-body" style="margin-bottom:12px;">Remove stake from a provisioner not yet in consensus (stake_deactivate).</div>
     <div id="deact-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <div id="deact-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
+    <!-- [batch_ui] -->
+    <label class="batch-opt">
+      <input type="checkbox" id="deact-batch" onchange="_batchOptToggle('deact','deactivate','mbtn mbtn-danger')">
+      <span><span class="bt">queue in batch — don't send now</span><br>
+      <span class="bh">queued txs propagate together and land in the same block</span></span>
+    </label>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-deactivate')">cancel</button>
-      <button class="mbtn mbtn-danger" onclick="doDeactivateStake()">deactivate</button>
+      <button class="mbtn mbtn-danger" id="deact-confirm-btn" onclick="doDeactivateStake()">deactivate</button>
     </div>
   </div>
 </div>
@@ -1010,9 +1069,15 @@
     <div class="modal-body" style="margin-bottom:12px;">Slashes the provisioner's stake and returns funds to pool. Does <strong>not</strong> terminate — provisioner remains in inactive state afterwards. Use when you want to reclaim stake but keep the provisioner registered.</div>
     <div id="liq-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <div id="liq-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
+    <!-- [batch_ui] -->
+    <label class="batch-opt">
+      <input type="checkbox" id="liq-batch" onchange="_batchOptToggle('liq','liquidate','mbtn mbtn-danger')">
+      <span><span class="bt">queue in batch — don't send now</span><br>
+      <span class="bh">queued txs propagate together and land in the same block</span></span>
+    </label>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-liquidate')">cancel</button>
-      <button class="mbtn mbtn-danger" onclick="doLiquidate()">liquidate</button>
+      <button class="mbtn mbtn-danger" id="liq-confirm-btn" onclick="doLiquidate()">liquidate</button>
     </div>
   </div>
 </div>
@@ -1058,9 +1123,58 @@
     <div class="modal-body" style="margin-bottom:12px;">Removes provisioner from the contract registry. Provisioner must be liquidated first (inactive with 0 stake). Use after a standalone liquidate to fully clean up.</div>
     <div id="term-prov-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;"></div>
     <div id="term-status" style="font-size:11px;min-height:16px;color:var(--dim);margin-bottom:8px;"></div>
+    <!-- [batch_ui] -->
+    <label class="batch-opt">
+      <input type="checkbox" id="term-batch" onchange="_batchOptToggle('term','terminate','mbtn mbtn-danger')">
+      <span><span class="bt">queue in batch — don't send now</span><br>
+      <span class="bh">queued txs propagate together and land in the same block</span></span>
+    </label>
     <div class="modal-actions">
       <button class="mbtn mbtn-cancel" onclick="closeModal('modal-terminate')">cancel</button>
-      <button class="mbtn mbtn-danger" onclick="doTerminate()">terminate</button>
+      <button class="mbtn mbtn-danger" id="term-confirm-btn" onclick="doTerminate()">terminate</button>
+    </div>
+  </div>
+</div>
+
+<!-- [batch_ui] Recycle confirm (was fire-on-click from the nav) -->
+<div class="modal-overlay" id="modal-recycle">
+  <div class="modal">
+    <div class="modal-title">Recycle</div>
+    <div class="modal-body" style="margin-bottom:12px;">
+      Batch-processes provisioner rewards into the pool (<code>pool recycle</code>).
+    </div>
+    <label class="batch-opt">
+      <input type="checkbox" id="rec-batch" onchange="_batchOptToggle('rec','recycle','mbtn mbtn-confirm')">
+      <span><span class="bt">queue in batch — don't send now</span><br>
+      <span class="bh">e.g. recycle + stake-activate in one block so the pool balance can't be snatched in between</span></span>
+    </label>
+    <div class="modal-actions">
+      <button class="mbtn mbtn-cancel" onclick="closeModal('modal-recycle')">cancel</button>
+      <button class="mbtn mbtn-confirm" id="rec-confirm-btn" onclick="doRecycle()">recycle</button>
+    </div>
+  </div>
+</div>
+
+<!-- [batch_ui] Batch panel -->
+<div class="modal-overlay" id="modal-batch">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-title" id="batch-panel-title">⛓ Batch</div>
+    <div class="modal-body" style="margin-bottom:10px;">
+      Executes in listed order, propagated together for <strong>same-block</strong> execution
+      (<code>batch propagate</code>). Stored in <code>batch.json</code> in the operator wallet dir.
+    </div>
+    <div id="batch-panel-list"></div>
+    <div id="batch-panel-cli" class="batch-cli" style="display:none"></div>
+    <div class="batch-warn" id="batch-panel-warn" style="display:none"></div>
+    <div class="modal-actions" style="justify-content:space-between">
+      <span>
+        <button class="mbtn mbtn-cancel" onclick="batchClear()">clear all</button>
+        <button class="mbtn mbtn-cancel" onclick="batchRemoveLast()">remove last</button>
+      </span>
+      <span>
+        <button class="mbtn mbtn-cancel" onclick="closeModal('modal-batch')">close</button>
+        <button class="mbtn mbtn-confirm" id="batch-propagate-btn" onclick="batchPropagate()">propagate all</button>
+      </span>
     </div>
   </div>
 </div>
@@ -1836,19 +1950,24 @@ async function cmdSubstrateActiveStake() {
 }
 
 
-async function cmdRecycle() {
-  const block = addPending('recycle')
+// [batch_ui] recycle now confirms via modal-recycle; batch=true queues instead of sending
+async function doRecycle() {
+  const batch = document.getElementById('rec-batch')?.checked || false
+  closeModal('modal-recycle')
+  const label = batch ? 'recycle → batch' : 'recycle'
+  const block = addPending(label)
   try {
     const r = await fetch(`${API}/api/sozu/recycle`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password: getPassword()})
+      body: JSON.stringify({password: getPassword(), batch})
     })
     const d = await r.json()
     resolveBlock(block, {ok: d.ok, stdout: d.stdout || d.stderr || JSON.stringify(d),
-                         stderr: d.stderr, duration_ms: d.duration_ms}, 'recycle')
+                         stderr: d.stderr, duration_ms: d.duration_ms}, batch ? label : 'recycle')
+    if (batch && d.ok) _batchRefreshChip()
   } catch(e) {
-    resolveBlock(block, {ok: false, stdout: '', stderr: String(e), duration_ms: 0}, 'recycle')
+    resolveBlock(block, {ok: false, stdout: '', stderr: String(e), duration_ms: 0}, label)
   }
 }
 
@@ -2110,6 +2229,7 @@ async function resetConfig() {
 // ── MODAL HELPERS ────────────────────────────────────────────────────────────
 function openModal(id) {
   document.getElementById(id)?.classList.add('open')
+  _batchOptReset(id)  // [batch_ui] batch checkbox is never sticky
   if (id === 'modal-config')      loadConfig()
   if (id === 'modal-track') { document.getElementById('track-hash-input').value = ''; document.getElementById('track-status').textContent = '' }
   if (id === 'modal-balance')     { _renderBalanceModalRows() }
@@ -2126,6 +2246,7 @@ document.addEventListener('click', e => {
 
 // Initial load — populate config fields
 checkBackendPasswordStatus();
+_batchRefreshChip();  // [batch_ui]
 loadConfig().then(() => {
   // Derive node indices from config, then build card containers before first render
   _NODE_INDICES = _deriveNodeIndices(_cfg)
@@ -2232,12 +2353,16 @@ async function doAllocateStake() {
     document.getElementById('alloc-status').textContent = 'Select at least one provisioner'
     return
   }
-  document.getElementById('alloc-status').textContent = `Staking ${amt} DUSK into ${checked.length} provisioner(s)…`
+  const batch = document.getElementById('alloc-batch')?.checked || false  // [batch_ui]
+  document.getElementById('alloc-status').textContent = batch
+    ? `Queueing ${amt} DUSK × ${checked.length} provisioner(s) in batch…`
+    : `Staking ${amt} DUSK into ${checked.length} provisioner(s)…`
   for (const idx of checked) {
-    await provAction(`stake_activate prov[${idx}] ${amt} DUSK`,
+    await provAction(`stake_activate prov[${idx}] ${amt} DUSK${batch ? ' → batch' : ''}`,
       '/api/provisioner/allocate_stake',
-      {provisioner_idx: idx, amount_dusk: amt})
+      {provisioner_idx: idx, amount_dusk: amt, batch})
   }
+  if (batch) _batchRefreshChip()
   document.getElementById('alloc-status').textContent = 'Done'
 }
 
@@ -2276,9 +2401,12 @@ async function doDeactivateStake() {
   const idx  = parseInt(sel.value)
   const addr = document.getElementById(`deact-prov${idx}-addr`).dataset.full || ''
   if (!addr) { document.getElementById('deact-status').textContent = 'No address — run stake info first'; return }
+  const batch = document.getElementById('deact-batch')?.checked || false  // [batch_ui]
   document.getElementById('deact-status').textContent = `Deactivating prov[${idx}]…`
-  provAction(`deactivate_stake prov[${idx}]`, '/api/provisioner/deactivate_stake',
-    {provisioner_address: addr})
+  await provAction(`deactivate_stake prov[${idx}]${batch ? ' → batch' : ''}`,
+    '/api/provisioner/deactivate_stake',
+    {provisioner_address: addr, provisioner_idx: idx, batch})
+  if (batch) _batchRefreshChip()
 }
 
 
@@ -2288,9 +2416,12 @@ async function doLiquidate() {
   const idx  = parseInt(sel.value)
   const addr = document.getElementById(`liq-prov${idx}-addr`).dataset.full || ''
   if (!addr) { document.getElementById('liq-status').textContent = 'No address — run stake info first'; return }
+  const batch = document.getElementById('liq-batch')?.checked || false  // [batch_ui]
   document.getElementById('liq-status').textContent = `Liquidating prov[${idx}]…`
-  provAction(`liquidate prov[${idx}]`, '/api/provisioner/liquidate',
-    {provisioner_address: addr})
+  await provAction(`liquidate prov[${idx}]${batch ? ' → batch' : ''}`,
+    '/api/provisioner/liquidate',
+    {provisioner_address: addr, provisioner_idx: idx, batch})
+  if (batch) _batchRefreshChip()
 }
 
 async function doTerminate() {
@@ -2299,9 +2430,178 @@ async function doTerminate() {
   const idx  = parseInt(sel.value)
   const addr = document.getElementById(`term-prov${idx}-addr`).dataset.full || ''
   if (!addr) { document.getElementById('term-status').textContent = 'No address — run stake info first'; return }
+  const batch = document.getElementById('term-batch')?.checked || false  // [batch_ui]
   document.getElementById('term-status').textContent = `Terminating prov[${idx}]…`
-  provAction(`terminate prov[${idx}]`, '/api/provisioner/terminate',
-    {provisioner_address: addr})
+  await provAction(`terminate prov[${idx}]${batch ? ' → batch' : ''}`,
+    '/api/provisioner/terminate',
+    {provisioner_address: addr, provisioner_idx: idx, batch})
+  if (batch) _batchRefreshChip()
+}
+
+// ── [batch_ui] TRANSACTION BATCHING ──────────────────────────────────────────
+// Wallet-level batching (sozu-wallet --batch / batch propagate): queued txs
+// are signed with pre-assigned nonces and propagate together → same-block
+// execution. See lib/routes/batch.py.
+
+// modal id → [checkbox/button prefix, normal confirm label, normal btn class]
+const _BATCH_MODALS = {
+  'modal-alloc-stake': ['alloc', 'stake activate', 'mbtn mbtn-confirm'],
+  'modal-deactivate':  ['deact', 'deactivate',     'mbtn mbtn-danger'],
+  'modal-liquidate':   ['liq',   'liquidate',      'mbtn mbtn-danger'],
+  'modal-terminate':   ['term',  'terminate',      'mbtn mbtn-danger'],
+  'modal-recycle':     ['rec',   'recycle',        'mbtn mbtn-confirm'],
+}
+
+// Swap the confirm button between "send now" and "add to batch" styling
+function _batchOptToggle(prefix, normalLabel, normalClass) {
+  const ck  = document.getElementById(`${prefix}-batch`)
+  const btn = document.getElementById(`${prefix}-confirm-btn`)
+  if (!ck || !btn) return
+  if (ck.checked) { btn.textContent = 'add to batch'; btn.className = 'mbtn mbtn-batch' }
+  else            { btn.textContent = normalLabel;    btn.className = normalClass }
+}
+
+// Reset to unchecked every time a modal opens — queueing must be an explicit
+// per-action choice, never sticky state from a previous use.
+function _batchOptReset(modalId) {
+  const m = _BATCH_MODALS[modalId]
+  if (!m) return
+  const ck = document.getElementById(`${m[0]}-batch`)
+  if (ck) { ck.checked = false; _batchOptToggle(...m) }
+}
+
+async function _batchRefreshChip() {
+  try {
+    const d = await fetch(`${API}/api/batch?meta=1`).then(r => r.json())
+    const n = d.count || 0
+    document.getElementById('batch-chip-n').textContent = n
+    document.getElementById('batch-chip').classList.toggle('armed', n > 0)
+  } catch(e) {}
+}
+
+function _batchShortAddr(a) { return a ? a.slice(0,10) + '…' + a.slice(-6) : '' }
+
+function _batchRenderEntries(entries) {
+  const host = document.getElementById('batch-panel-list')
+  if (!entries.length) {
+    host.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:8px 0;">batch is empty</div>'
+    return
+  }
+  host.innerHTML = entries.map((e, i) => {
+    const tgt = e.action === 'recycle' ? 'operator rewards → pool'
+      : `${e.prov_idx != null ? `prov[${e.prov_idx}] · ` : ''}${_batchShortAddr(e.provisioner)}`
+    const amt = e.amount_dusk != null
+      ? `${Number(e.amount_dusk).toLocaleString('en-US', {maximumFractionDigits: 0})} DUSK`
+      : (e.action === 'liquidate' ? '→ pool' : '')
+    return `<div class="bq-row"><span class="ord">${i + 1}</span>` +
+           `<span class="act">${e.action}</span><span class="tgt">${tgt}</span>` +
+           (amt ? `<span class="amt">${amt}</span>` : '') + `</div>`
+  }).join('')
+}
+
+function _batchRenderWarn(count) {
+  const warn = document.getElementById('batch-panel-warn')
+  if (!count) { warn.style.display = 'none'; return }
+  let windowLine = ''
+  const h = window._lastHeight || 0
+  if (h) {
+    const EPOCH_BLOCKS = 2160
+    const rotWin    = (_cfg && _cfg.rotation_window) ? parseInt(_cfg.rotation_window) : 41
+    const blk_left  = EPOCH_BLOCKS - (h % EPOCH_BLOCKS)
+    windowLine = blk_left > rotWin
+      ? ` Rotation window opens in <strong>~${(blk_left - rotWin).toLocaleString()} blocks</strong> — propagate or clear before then.`
+      : ` <strong>Rotation window is open or imminent (blk_left ${blk_left})</strong> — propagate or clear NOW.`
+  }
+  warn.innerHTML = '⚠ nonces are assigned at queue time. While a batch is pending, any other ' +
+    'operator-wallet transaction (rotation automation, deposit race, un-batched manual actions) ' +
+    'will invalidate it.' + windowLine
+  warn.style.display = ''
+}
+
+async function openBatchPanel() {
+  openModal('modal-batch')
+  document.getElementById('batch-panel-title').textContent = '⛓ Batch — loading…'
+  document.getElementById('batch-panel-cli').style.display = 'none'
+  _batchResetPropagateBtn()
+  try {
+    const d = await fetch(`${API}/api/batch`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: getPassword()})
+    }).then(r => r.json())
+    const entries = d.entries || []
+    const count   = d.count ?? entries.length
+    document.getElementById('batch-panel-title').textContent =
+      `⛓ Batch — ${count} queued transaction${count === 1 ? '' : 's'}`
+    _batchRenderEntries(entries)
+    _batchRenderWarn(count)
+    // CLI ground truth — catches anything queued outside the dashboard
+    const cli = document.getElementById('batch-panel-cli')
+    if (d.cli_stdout && count !== entries.length) {
+      cli.textContent = d.cli_stdout; cli.style.display = ''
+    }
+    const btn = document.getElementById('batch-propagate-btn')
+    btn.textContent = `propagate all (${count})`
+    btn.disabled = !count
+    document.getElementById('batch-chip-n').textContent = count
+    document.getElementById('batch-chip').classList.toggle('armed', count > 0)
+  } catch(e) {
+    document.getElementById('batch-panel-title').textContent = '⛓ Batch — error'
+    document.getElementById('batch-panel-list').innerHTML =
+      `<div style="color:var(--red);font-size:12px;">${e}</div>`
+  }
+}
+
+function _batchResetPropagateBtn() {
+  const btn = document.getElementById('batch-propagate-btn')
+  btn.className = 'mbtn mbtn-confirm'
+  delete btn.dataset.confirming
+  clearTimeout(window._batchConfirmTimer)
+}
+
+async function _batchOp(label, url) {
+  const block = addPending(label)
+  try {
+    const d = await fetch(`${API}${url}`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: getPassword()})
+    }).then(r => r.json())
+    resolveBlock(block, {ok: d.ok, stdout: d.stdout || d.stderr || JSON.stringify(d),
+                         stderr: d.stderr, duration_ms: d.duration_ms}, label)
+    return d
+  } catch(e) {
+    resolveBlock(block, {ok: false, stdout: '', stderr: String(e), duration_ms: 0}, label)
+    return {ok: false}
+  }
+}
+
+async function batchClear() {
+  await _batchOp('batch_clear', '/api/batch/clear')
+  openBatchPanel()
+}
+
+async function batchRemoveLast() {
+  await _batchOp('batch_remove_last', '/api/batch/remove_last')
+  openBatchPanel()
+}
+
+// Two-step confirm: first click arms the button, second click within 5s fires.
+async function batchPropagate() {
+  const btn = document.getElementById('batch-propagate-btn')
+  if (!btn.dataset.confirming) {
+    btn.dataset.confirming = '1'
+    btn.className = 'mbtn mbtn-danger'
+    const prev = btn.textContent
+    btn.textContent = 'confirm propagate?'
+    window._batchConfirmTimer = setTimeout(() => {
+      btn.textContent = prev; _batchResetPropagateBtn()
+    }, 5000)
+    return
+  }
+  _batchResetPropagateBtn()
+  closeModal('modal-batch')
+  await _batchOp('batch_propagate', '/api/batch/propagate')
+  _batchRefreshChip()
+  if (typeof _scheduleProvRefresh === 'function') _scheduleProvRefresh('cmd:batch_propagate')
 }
 
 async function doRemoveProvisioner() {
@@ -2527,6 +2827,7 @@ function _onRuesBlock(height) {
 
 function _updateBlkCounter(height) {
   if (!height) return
+  window._lastHeight = height  // [batch_ui] used for the rotation-window warning
   const EPOCH_BLOCKS = 2160
   const blk_in_epoch = height % EPOCH_BLOCKS  // blocks elapsed in this epoch
   const blk_left = EPOCH_BLOCKS - blk_in_epoch
