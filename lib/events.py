@@ -124,6 +124,11 @@ def on_event(topic: str, decoded: dict, block_height: int | None = None) -> None
     try:
         if topic == "deposit":
             _handle_deposit(decoded, block_height, label="deposit")
+        elif topic == "sozu_airdrop":
+            # [airdrop] The contract may emit under the function's own name.
+            # Same "airdrop" dedup label as the donate + tx/executed paths, so
+            # whichever of the three is real allocates and the others no-op.
+            _handle_deposit(decoded, block_height, label="airdrop")
         elif topic == "donate":
             # [airdrop] sozu_airdrop(uint64) is believed to emit DonateEvent
             # {account, amount} — value added to the pool without minting shares

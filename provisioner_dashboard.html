@@ -3001,8 +3001,8 @@ let _ruesRawShowSet = null
 
 // Topic classification for two-row filter UI
 const _BLOCKS_TOPICS   = ['block_accepted']
-const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','liquidate','reward','unstake','capacity_update']
-const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
+const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','sozu_airdrop','liquidate','reward','unstake','capacity_update']
+const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','sozu_airdrop','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
 const _TX_TOPICS       = ['tx/included','tx/executed']
 // [airdrop] tx/airdrop is a VIRTUAL key like reward/recycle — there is no such
 // RUES subscription. sozu_airdrop is a function, not a topic, so it arrives
@@ -3024,6 +3024,7 @@ const _SEG_TO_KEY = {
   'deactivate': 'deactivate',
   'deposit':    'deposit',
   'donate':     'donate',
+  'sozu_airdrop': 'sozu_airdrop',   // [airdrop] real topic if the contract emits it
   'liquidate':  'liquidate',
   'reward':     'reward',  // wire sub stays as 'reward'; filter uses virtual keys below
   'reward/recycle':   'reward/recycle',
