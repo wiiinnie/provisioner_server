@@ -496,14 +496,7 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
             inner   = decoded.get("inner") or decoded
             call    = inner.get("call") or {}
             fn_name = call.get("fn_name", "")
-            # [airdrop] sozu_airdrop only. Deliberately NOT sozu_stake: the
-            # legacy "deposit"/"stake" entries do not match the real fn_names,
-            # so this warm path has been dead for deposits — switching it on
-            # would hand the deposit race a capacity cache warmed at
-            # tx/included, ~2 blocks BEFORE the deposit landed, in place of a
-            # fresh read. That is a behaviour change to a path that works.
-            if fn_name in ("deposit", "stake", "recycle", "terminate",
-                           "sozu_airdrop"):
+            if fn_name in ("deposit", "stake", "recycle", "terminate"):
                 import threading as _thr
                 _thr.Thread(target=_warm_caches, daemon=True).start()
         except Exception:
