@@ -3028,17 +3028,18 @@ let _ruesRawShowSet = null
 // Topic classification for two-row filter UI
 const _BLOCKS_TOPICS   = ['block_accepted']
 const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','liquidate','reward','unstake','capacity_update']
-const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
+const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','sozu_airdrop','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
 const _TX_TOPICS       = ['tx/included','tx/executed']
-// [airdrop] sozu_airdrop rides in on tx/included|tx/executed as a moonlight tx
-// (call.fn_name + call.fn_args), exactly like stake_activate — there is no
-// separate subscription for it, so this is a filter-only key, split out of the
-// tx firehose by fn_name. Deliberately NOT in _TX_TOPICS: that list also feeds
-// the subscription chip row above the tabs.
-const _FILTER_TX_TOPICS = [..._TX_TOPICS, 'sozu_airdrop']
+// [airdrop] sozu_airdrop is a filter-only virtual key, exactly like
+// reward/recycle: no subscription behind it, just a client-side split of frames
+// we already receive. It rides in on tx/included|tx/executed as a moonlight tx
+// (call.fn_name + call.fn_args), the same shape stake_activate arrives in — but
+// it is grouped under POOL CONTRACT rather than TRANSACTIONS because the filter
+// row groups virtual keys by SUBJECT, not by wire endpoint (reward/recycle sets
+// that precedent), and an airdrop is a call to the pool contract.
 // [slash_events] genesis stake contract topics
 const _STAKE_TOPICS    = ['slash','hard_slash']
-const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._STAKE_TOPICS, ..._FILTER_TX_TOPICS]
+const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._STAKE_TOPICS, ..._TX_TOPICS]
 // Display labels
 const _TOPIC_LABELS = {}
 // Raw tab: URL segment → internal key (fixes the broken mapping)
@@ -3190,7 +3191,7 @@ async function _pollRues() {
     if (rawBlEl) rawBlEl.innerHTML = _BLOCKS_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     if (rawCoEl) rawCoEl.innerHTML = _FILTER_CONTRACT_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     if (rawStEl) rawStEl.innerHTML = _STAKE_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
-    if (rawTxEl) rawTxEl.innerHTML = _FILTER_TX_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
+    if (rawTxEl) rawTxEl.innerHTML = _TX_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     _updateAllBtn('rues-raw-all-btn', _ruesRawShowSet, 'var(--yellow)')
 
     // ── Raw tab log ───────────────────────────────────────────────────────────
@@ -3316,7 +3317,7 @@ async function _pollRues() {
     if (evBlEl) evBlEl.innerHTML = _BLOCKS_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     if (evCoEl) evCoEl.innerHTML = _FILTER_CONTRACT_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     if (evStEl) evStEl.innerHTML = _STAKE_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
-    if (evTxEl) evTxEl.innerHTML = _FILTER_TX_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
+    if (evTxEl) evTxEl.innerHTML = _TX_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     _updateAllBtn('rues-all-btn', _ruesShowSet, 'var(--teal)')
 
     // Event log — apply filter (virtual filters check decoded.operation for reward events)
