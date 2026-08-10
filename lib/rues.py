@@ -451,7 +451,11 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
             inner   = decoded.get("inner") or decoded
             call    = inner.get("call") or {}
             fn_name = call.get("fn_name", "")
-            if fn_name in ("deposit", "stake", "recycle", "terminate"):
+            # [airdrop] sozu_airdrop/sozu_stake are the real CLI fn_names; the
+            # bare "deposit"/"stake" entries predate that and are kept in case
+            # an older node still reports them.
+            if fn_name in ("deposit", "stake", "recycle", "terminate",
+                           "sozu_stake", "sozu_airdrop"):
                 import threading as _thr
                 _thr.Thread(target=_warm_caches, daemon=True).start()
         except Exception:

@@ -25,6 +25,7 @@ Allocation rules per window:
   - block_height None for contract events — wire up block cache backfill
 """
 
+import base64 as _b64          # [airdrop] sozu_airdrop fn_args fallback decode
 import threading
 import time
 from collections import deque
@@ -123,6 +124,14 @@ def on_event(topic: str, decoded: dict, block_height: int | None = None) -> None
     try:
         if topic == "deposit":
             _handle_deposit(decoded, block_height, label="deposit")
+        elif topic == "donate":
+            # [airdrop] sozu_airdrop(uint64) is believed to emit DonateEvent
+            # {account, amount} — value added to the pool without minting shares
+            # (no token_total_supply field, unlike DepositEvent). Same pool-balance
+            # effect as a deposit, so it races the same way.
+            # Shares the "airdrop" dedup label with the tx/executed path below so
+            # only one of the two can allocate. See _handle_airdrop_tx.
+            _handle_deposit(decoded, block_height, label="airdrop")
         elif topic == "reward":
             _handle_reward(decoded, block_height)
         elif topic in ("activate", "liquidate", "deactivate", "unstake"):
@@ -135,6 +144,7 @@ def on_event(topic: str, decoded: dict, block_height: int | None = None) -> None
             if topic == "activate":
                 _handle_activate(decoded, block_height)
         elif topic == "tx/executed":
+            _handle_airdrop_tx(decoded, block_height)   # [airdrop]
             _handle_tx_executed(decoded, block_height)
     except Exception as e:
         _log(f"[events] on_event({topic}) error: {e}")
@@ -438,6 +448,84 @@ def _warm_caches() -> None:
 
 
 
+
+
+def _airdrop_amount_lux(call: dict, inner: dict) -> int:
+    """[airdrop] Amount (lux) a sozu_airdrop call moved into the pool.
+
+    Schema: sozu_airdrop(uint64) -> (), same arg encoding as sozu_stake — the
+    payload is a bare little-endian u64, 8 bytes. Verified against a real tx:
+    fn_args "wGIXLR0NAAA=" -> c062172d1d0d0000 -> 14_418_961_720_000 lux
+    (14,418.96172 DUSK), which equalled the moonlight `deposit` field exactly.
+
+    Three sources, most-trusted first: the node's driver decode, our own
+    little-endian decode of the raw fn_args, and the moonlight `deposit` field.
+    The deposit field is the value the chain actually moved, so it wins any
+    disagreement — a smaller fn_args arg would otherwise over-allocate.
+    """
+    arg_lux = 0
+
+    fn_dec = call.get("_fn_args_decoded")
+    if isinstance(fn_dec, dict):
+        fn_dec = fn_dec.get("value") or fn_dec.get("amount") or 0
+    if isinstance(fn_dec, (int, float)):
+        arg_lux = int(fn_dec)
+    elif isinstance(fn_dec, str) and fn_dec.strip().isdigit():
+        arg_lux = int(fn_dec.strip())
+
+    if not arg_lux:
+        # Driver decode unavailable — decode the 8-byte LE u64 ourselves.
+        try:
+            raw = _b64.b64decode(call.get("fn_args") or "")
+            if len(raw) >= 8:
+                arg_lux = int.from_bytes(raw[:8], "little")
+        except Exception as e:
+            _log(f"[airdrop] fn_args decode failed: {e}")
+
+    dep_lux = 0
+    try:
+        dep_lux = int(str(inner.get("deposit") or 0))
+    except (TypeError, ValueError):
+        pass
+
+    if arg_lux and dep_lux and arg_lux != dep_lux:
+        _log(f"[airdrop] fn_args {arg_lux} != deposit {dep_lux} — using the smaller")
+        return min(arg_lux, dep_lux)
+    return arg_lux or dep_lux
+
+
+def _handle_airdrop_tx(decoded: dict, block_height: int | None) -> None:
+    """[airdrop] Race a sozu_airdrop the same way we race a deposit.
+
+    Belt-and-braces second path: if sozu_airdrop emits the `donate` contract
+    event, on_event's donate branch already handled it and the shared "airdrop"
+    dedup label makes this call a no-op. If it emits no event we recognise, this
+    is the only path that sees the money. Whichever arrives first wins; the
+    other is dropped by _handle_deposit's 30s dedup.
+    """
+    if not isinstance(decoded, dict):
+        return
+    inner = decoded.get("inner") or decoded
+    call  = inner.get("call") or {}
+    if call.get("fn_name") != "sozu_airdrop":
+        return
+
+    if decoded.get("err") is not None:
+        _log(f"[airdrop] tx reverted ({decoded.get('err')!r}) — no money moved, skip")
+        return
+
+    amount_lux = _airdrop_amount_lux(call, inner)
+    if amount_lux <= 0:
+        _log("[airdrop] could not determine amount — skip")
+        return
+
+    _handle_deposit(
+        {"amount": amount_lux,
+         "account": inner.get("sender") or "",
+         "hash": decoded.get("hash") or ""},
+        decoded.get("block_height") or block_height,
+        label="airdrop",
+    )
 
 
 def _handle_tx_executed(decoded: dict, block_height: int | None) -> None:
