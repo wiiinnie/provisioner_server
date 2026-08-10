@@ -2470,9 +2470,35 @@ function _batchOptReset(modalId) {
   if (ck) { ck.checked = false; _batchOptToggle(...m) }
 }
 
+// [batch] Fetch + parse with a diagnosable failure.
+//
+// The dashboard HTML is served straight off disk (send_file in routes/system.py),
+// but the API is whatever the RUNNING gunicorn process registered at import time.
+// After a `git pull` without a `systemctl restart sozu-dashboard`, the browser
+// gets this new page while the old server has no batch blueprint — /api/batch
+// 404s, Flask answers with an HTML error page, and r.json() dies on the leading
+// '<' with a bare "SyntaxError: Unexpected token '<'" that points nowhere.
+// Name the actual cause instead.
+async function _batchJson(url, opts) {
+  const r    = await fetch(url, opts)
+  const body = await r.text()
+  if (!r.ok || body.trimStart().startsWith('<')) {
+    if (r.status === 404 || body.trimStart().startsWith('<')) {
+      throw new Error(`batch API not found (HTTP ${r.status}) — this page is newer `
+        + `than the server running it. Restart sozu-dashboard on this host.`)
+    }
+    throw new Error(`HTTP ${r.status} ${r.statusText}`)
+  }
+  try {
+    return JSON.parse(body)
+  } catch(e) {
+    throw new Error(`bad JSON from ${url}: ${body.slice(0, 120)}`)
+  }
+}
+
 async function _batchRefreshChip() {
   try {
-    const d = await fetch(`${API}/api/batch?meta=1`).then(r => r.json())
+    const d = await _batchJson(`${API}/api/batch?meta=1`)
     const n = d.count || 0
     document.getElementById('batch-chip-n').textContent = n
     document.getElementById('batch-chip').classList.toggle('armed', n > 0)
@@ -2524,10 +2550,10 @@ async function openBatchPanel() {
   document.getElementById('batch-panel-cli').style.display = 'none'
   _batchResetPropagateBtn()
   try {
-    const d = await fetch(`${API}/api/batch`, {method: 'POST',
+    const d = await _batchJson(`${API}/api/batch`, {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({password: getPassword()})
-    }).then(r => r.json())
+    })
     const entries = d.entries || []
     const count   = d.count ?? entries.length
     document.getElementById('batch-panel-title').textContent =
@@ -2561,10 +2587,10 @@ function _batchResetPropagateBtn() {
 async function _batchOp(label, url) {
   const block = addPending(label)
   try {
-    const d = await fetch(`${API}${url}`, {method: 'POST',
+    const d = await _batchJson(`${API}${url}`, {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({password: getPassword()})
-    }).then(r => r.json())
+    })
     resolveBlock(block, {ok: d.ok, stdout: d.stdout || d.stderr || JSON.stringify(d),
                          stderr: d.stderr, duration_ms: d.duration_ms}, label)
     return d
