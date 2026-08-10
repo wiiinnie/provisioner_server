@@ -725,7 +725,16 @@
             style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
                    border-radius:3px;border:1px solid var(--border);color:var(--dim);
                    background:var(--bg3);cursor:pointer;flex-shrink:0;">mine only</button>
+          <!-- [log24h] pull the full retained window instead of the live slice -->
+          <button id="rues-24h-btn" onclick="ruesLoad24h()" title="load the full retained history (~24h)"
+            style="font-family:'IBM Plex Mono',monospace;font-size:8px;padding:1px 6px;
+                   border-radius:3px;border:1px solid var(--border);color:var(--dim);
+                   background:var(--bg3);cursor:pointer;flex-shrink:0;">24h</button>
         </div>
+        <!-- [log24h] what the server actually still holds -->
+        <div id="rues-retention"
+             style="font-family:'IBM Plex Mono',monospace;font-size:7.5px;color:var(--dim);
+                    padding:2px 0 0 64px;"></div>
       </div>
       <div id="rues-log" class="col-body"
            style="font-family:'IBM Plex Mono',monospace;font-size:9px;overflow-y:auto;flex:1;min-height:0;padding:6px 8px;"></div>
@@ -3136,9 +3145,57 @@ function _ruesTab(tab) {
   }
 }
 
+// [log24h] The server retains ~24h but this polls every 3s, so the live view
+// asks for a small slice. "load 24h" flips _ruesLimit to the whole window for
+// one fetch; the existing filter chips then apply to the full history client-side.
+let _ruesLimit    = 400
+let _ruesHistory  = false
+
+async function ruesLoad24h() {
+  _ruesHistory = !_ruesHistory
+  _ruesLimit   = _ruesHistory ? 100000 : 400
+  const btn = document.getElementById('rues-24h-btn')
+  if (btn) {
+    btn.textContent  = _ruesHistory ? '⏳ loading…' : '24h'
+    btn.style.color  = _ruesHistory ? 'var(--yellow)' : 'var(--dim)'
+    btn.style.border = '1px solid ' + (_ruesHistory ? 'var(--yellow)' : 'var(--border)')
+  }
+  await _pollRues()
+}
+
+function _ruesRenderRetention(d) {
+  const el = document.getElementById('rues-retention')
+  if (!el) return
+  const r = d.retention
+  if (!r) { el.textContent = ''; return }
+  const parts = [
+    `${r.event_count.toLocaleString()} events / ${r.raw_count.toLocaleString()} raw`,
+    `spanning ${r.event_span_hours}h of ${r.hours_configured}h`,
+  ]
+  if (r.truncated && !_ruesHistory) parts.push('— showing recent only, press 24h for all')
+  if (r.event_count >= r.event_max)  parts.push('⚠ event cap reached, oldest dropped')
+  if (r.raw_count   >= r.raw_max)    parts.push('⚠ raw cap reached, oldest dropped')
+  el.textContent = parts.join(' · ')
+}
+
+// [log24h] "ts" is HH:MM:SS.mmm with no date, which is ambiguous once the log
+// spans more than a day. Prefix the date for anything not from today.
+function _ruesTs(e) {
+  if (!e.ts_epoch) return e.ts
+  const d = new Date(e.ts_epoch * 1000)
+  const today = new Date()
+  if (d.toDateString() === today.toDateString()) return e.ts
+  return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${e.ts}`
+}
+
 async function _pollRues() {
   try {
-    const d = await fetch(`${API}/api/rues/status`).then(r => r.json())
+    const d = await fetch(`${API}/api/rues/status?limit=${_ruesLimit}`).then(r => r.json())
+    _ruesRenderRetention(d)
+    if (_ruesHistory) {
+      const btn = document.getElementById('rues-24h-btn')
+      if (btn) btn.textContent = '24h ✓'
+    }
 
     // Dot + endpoint
     const dot = document.getElementById('rues-conn-dot')
@@ -3268,7 +3325,7 @@ async function _pollRues() {
             ? 'background:rgba(45,212,184,.05);border-left:2px solid rgba(45,212,184,.3);padding-left:6px;'
             : ''
           return '<div style="padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);' + rawBg + '">' +
-            '<span style="color:var(--dim)">' + f.ts + '</span> ' +
+            '<span style="color:var(--dim)">' + _ruesTs(f) + '</span> ' +
             '<span style="color:' + col + '">' + label + '</span> ' +
             '<span style="color:var(--muted)">' + f.len + 'B</span>' +
             (locDisplay ? '<div style="color:var(--dim);font-size:8px;padding-left:8px;">' + locDisplay + '</div>' : '') +
@@ -3444,7 +3501,7 @@ async function _pollRues() {
             ? 'background:rgba(45,212,184,.05);border-left:2px solid rgba(45,212,184,.3);padding-left:6px;'
             : ''
           return `<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04);${bgStyle}">` +
-            `<span style="color:var(--dim)">${e.ts}</span> ` +
+            `<span style="color:var(--dim)">${_ruesTs(e)}</span> ` +
             `<span style="color:${col}">${topicLabel}</span>` +
             `${blockDetail}` +
             `<span style="color:var(--muted)">${hStr && !blockDetail ? hStr : ''}${txs}${pStr}</span>` +
@@ -3462,7 +3519,16 @@ async function _pollRues() {
   }
 }
 
-setInterval(_pollRues, 3000)
+// [log24h] In history mode each poll ships the whole retained window, so
+// throttle it hard — 3s for the live slice, 30s once 24h is loaded.
+let _ruesLastFull = 0
+setInterval(() => {
+  if (_ruesHistory) {
+    if (Date.now() - _ruesLastFull < 30000) return
+    _ruesLastFull = Date.now()
+  }
+  _pollRues()
+}, 3000)
 // Initial call is inside loadConfig().then() to ensure _cfg is populated first
 
 function _showToggle(topic, showSet, setter) {

@@ -136,6 +136,9 @@ _CONFIG_DEFAULTS = {
     "network_id":              2,
     "contract_address":        CONTRACT_ID,
     "stake_contract_id":       STAKE_CONTRACT_ID,  # [slash_events]
+    # [log24h] how long RUES keeps event/raw frames in memory. Airdrops land
+    # about once a day, so the default has to span more than one.
+    "rues_log_retention_hours": 24,
     "operator_address":        "",
     "prov_0_address":          "",
     "prov_1_address":          "",

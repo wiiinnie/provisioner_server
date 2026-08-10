@@ -17,6 +17,14 @@ from ..wallet import run_cmd, wallet_cmd, get_password, _cache_wallet_pw, clear_
 
 bp = Blueprint("system", __name__)
 
+# [log24h] Topic filter whitelist for /api/rues/status. The value only ever
+# reaches an in-memory string comparison, never a shell or a URL, but this file
+# has a history of interpolating request data unchecked (C1) — so bound it to
+# the shape real topic keys have: word chars plus one optional "/" segment
+# (tx/executed, reward/recycle, sozu_airdrop).
+import re as _re
+_VALID_TOPIC_RE = _re.compile(r"^[A-Za-z0-9_]+(/[A-Za-z0-9_]+)?$")
+
 # [version_dynamic] SERVER_VERSION constant retired — version comes from git
 # metadata via the /api/version endpoint below.
 
@@ -180,7 +188,8 @@ def set_config():
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port",
-                  "sweeper_delay_blocks")  # [config_whitelist_fix]
+                  "sweeper_delay_blocks",
+                  "rues_log_retention_hours")  # [config_whitelist_fix] [log24h]
     bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause] [config_whitelist_fix]
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct",
                   "master_alert_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
@@ -354,8 +363,18 @@ def history_stake():
 
 @bp.route("/api/rues/status", methods=["GET"])
 def rues_status():
+    # [log24h] ?limit= slices the retained window (live poll uses a small one),
+    # ?topic= filters server-side so pulling 24h of one topic stays cheap.
     from ..rues import get_status
-    return jsonify(get_status())
+    try:
+        limit = int(request.args.get("limit") or 400)
+    except (TypeError, ValueError):
+        limit = 400
+    limit = max(1, min(limit, 100000))
+    topic = (request.args.get("topic") or "").strip()
+    if topic and not _VALID_TOPIC_RE.match(topic):
+        topic = ""
+    return jsonify(get_status(limit=limit, topic=topic))
 
 
 @bp.route("/api/rues/subscribe", methods=["POST"])

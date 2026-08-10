@@ -24,12 +24,55 @@ _sub_results: dict = {}
 _sub_lock          = threading.Lock()
 _state_lock        = threading.Lock()
 
-_event_log: deque = deque(maxlen=1000)
+# [log24h] Retention. Airdrops land roughly once a day, so the log has to span
+# more than a day to prove one was seen — 1000 entries was about 3 hours of
+# block_accepted alone (~8,640/day at 10s blocks).
+#
+# Two independent limits, because either can bite first:
+#   - age    — drop anything older than rues_log_retention_hours (default 24)
+#   - count  — hard ceiling so a tx storm cannot exhaust RAM on the VPS
+# The deques are bounded by the count cap; _prune_logs enforces the age cap.
+#
+# These are held in memory only: a dashboard restart empties them.
+_EVENT_LOG_MAX = 20000
+_RAW_LOG_MAX   = 6000
+
+_event_log: deque = deque(maxlen=_EVENT_LOG_MAX)
 _log_lock          = threading.Lock()
 
 # Raw frame log — stores every WS message regardless of parse success
-_raw_log: deque = deque(maxlen=1000)
+_raw_log: deque = deque(maxlen=_RAW_LOG_MAX)
 _raw_log_lock     = threading.Lock()
+
+_last_prune: float = 0.0
+
+
+def _retention_secs() -> int:
+    from .config import cfg
+    try:
+        hours = float(cfg("rues_log_retention_hours") or 24)
+    except (TypeError, ValueError):
+        hours = 24.0
+    return int(max(1.0, hours) * 3600)
+
+
+def _prune_logs(force: bool = False) -> None:
+    """Drop entries past the age cap. Throttled to once a minute — the count cap
+    on the deques already bounds memory, so this only needs to run occasionally.
+
+    Entries are appendleft'd, so the oldest sit at the right end and pruning is
+    a pop() from the right until the tail is inside the window.
+    """
+    global _last_prune
+    now = time.time()
+    if not force and now - _last_prune < 60:
+        return
+    _last_prune = now
+    cutoff = now - _retention_secs()
+    for log, lock in ((_event_log, _log_lock), (_raw_log, _raw_log_lock)):
+        with lock:
+            while log and log[-1].get("ts_epoch", now) < cutoff:
+                log.pop()
 
 # ── Tx confirmation registry ──────────────────────────────────────────────────
 # rotation.py registers an Event keyed by (fn_name, prov_addr).
@@ -370,6 +413,7 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
             _log(f"[rues] block height={height}")
     entry = {
         "ts":          ts,
+        "ts_epoch":    time.time(),   # [log24h] wall clock — "ts" has no date
         "topic":       topic,
         "height":      height,
         "decoded":     decoded,
@@ -377,6 +421,7 @@ def _append_log(topic: str, header: dict, decoded: dict, payload: bytes) -> None
     }
     with _log_lock:
         _event_log.appendleft(entry)
+    _prune_logs()
     if height:
         try:
             from .nodes import _on_remote_block
@@ -544,7 +589,9 @@ def _rues_thread() -> None:
 
                 ts_raw = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 raw_entry = {
-                    "ts": ts_raw, "len": len(raw_bytes),
+                    "ts": ts_raw,
+                    "ts_epoch": time.time(),   # [log24h]
+                    "len": len(raw_bytes),
                     "hex": raw_bytes[:64].hex(),
                     "text": raw_bytes[:300].decode("utf-8", errors="replace"),
                     "parsed": False,
@@ -605,7 +652,38 @@ def start() -> None:
     threading.Thread(target=_rues_thread, daemon=True, name="rues").start()
 
 
-def get_status() -> dict:
+def _entry_fn_name(entry: dict) -> str:
+    """[log24h] fn_name of a tx entry, for server-side virtual-topic filtering."""
+    dec = entry.get("decoded")
+    if not isinstance(dec, dict):
+        return ""
+    inner = dec.get("inner") or dec
+    if not isinstance(inner, dict):
+        return ""
+    return ((inner.get("call") or {}).get("fn_name")) or ""
+
+
+def _entry_matches_topic(entry: dict, topic: str) -> bool:
+    """Real topics match directly. Virtual keys mirror the dashboard's
+    _virtualKey(): reward/<operation>, and sozu_airdrop by tx fn_name."""
+    etopic = entry.get("topic", "")
+    if etopic == topic:
+        return True
+    if topic.startswith("reward/"):
+        dec = entry.get("decoded")
+        op  = dec.get("operation") if isinstance(dec, dict) else None
+        return etopic == "reward" and f"reward/{op}" == topic
+    if topic == "sozu_airdrop":
+        return etopic.startswith("tx/") and _entry_fn_name(entry) == "sozu_airdrop"
+    return False
+
+
+def get_status(limit: int = 400, topic: str = "", raw_limit: int | None = None) -> dict:
+    """[log24h] The dashboard polls this every 3s, so it returns a SLICE by
+    default — shipping the full 24h window on every poll would be tens of MB.
+    Pass a large limit (and optionally a topic) to pull history on demand.
+    """
+    _prune_logs()
     with _state_lock:
         sid  = _session_id
         conn = _connected
@@ -613,17 +691,44 @@ def get_status() -> dict:
     with _sub_lock:
         subs = dict(_sub_results)
     with _log_lock:
-        log = list(_event_log)
+        log_all = list(_event_log)
     with _raw_log_lock:
-        raw = list(_raw_log)
+        raw_all = list(_raw_log)
+
+    if topic:
+        log_all = [e for e in log_all if _entry_matches_topic(e, topic)]
+
+    now = time.time()
+
+    def _span(entries):
+        """Age of the oldest retained entry, in hours."""
+        if not entries:
+            return 0.0
+        oldest = entries[-1].get("ts_epoch") or now
+        return round((now - oldest) / 3600.0, 2)
+
+    if raw_limit is None:
+        raw_limit = limit
+
     return {
         "connected":      conn,
         "session_id":     sid,
         "ws_url":         url,
         "subscriptions":  subs,
         "all_topics":     list(TOPIC_PATHS.keys()),
-        "log":            log,
-        "raw_log":        raw,
+        "log":            log_all[:limit],
+        "raw_log":        raw_all[:raw_limit],
+        # [log24h] retention metadata — lets the UI show what is actually held
+        "retention": {
+            "hours_configured": _retention_secs() / 3600.0,
+            "event_count":      len(log_all),
+            "event_span_hours": _span(log_all),
+            "event_max":        _EVENT_LOG_MAX,
+            "raw_count":        len(raw_all),
+            "raw_span_hours":   _span(raw_all),
+            "raw_max":          _RAW_LOG_MAX,
+            "truncated":        len(log_all) > limit or len(raw_all) > raw_limit,
+        },
     }
 
 
