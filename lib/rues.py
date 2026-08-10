@@ -113,13 +113,6 @@ TOPIC_PATHS = {
     "reward":           "/on/contracts:{cid}/reward",
     "unstake":          "/on/contracts:{cid}/unstake",
     "capacity_update":  "/on/contracts:{cid}/update_operator_max_capacity",
-    # [airdrop] Contracts emit events under arbitrary topic names, and the
-    # schema's Events table is not exhaustive — capacity_update above is proof:
-    # update_operator_max_capacity is a function name, not a listed event, and
-    # we have subscribed to it as a topic all along. So sozu_airdrop may well be
-    # emitted under its own name. Subscribing costs nothing if it never fires;
-    # the chip goes red if the node rejects the topic, which is the answer.
-    "sozu_airdrop":     "/on/contracts:{cid}/sozu_airdrop",
     # [slash_events] genesis stake contract topics (provisioner slashing)
     "slash":            "/on/contracts:{stake_cid}/slash",
     "hard_slash":       "/on/contracts:{stake_cid}/hard_slash",

@@ -124,19 +124,6 @@ def on_event(topic: str, decoded: dict, block_height: int | None = None) -> None
     try:
         if topic == "deposit":
             _handle_deposit(decoded, block_height, label="deposit")
-        elif topic == "sozu_airdrop":
-            # [airdrop] The contract may emit under the function's own name.
-            # Same "airdrop" dedup label as the donate + tx/executed paths, so
-            # whichever of the three is real allocates and the others no-op.
-            _handle_deposit(decoded, block_height, label="airdrop")
-        elif topic == "donate":
-            # [airdrop] sozu_airdrop(uint64) is believed to emit DonateEvent
-            # {account, amount} — value added to the pool without minting shares
-            # (no token_total_supply field, unlike DepositEvent). Same pool-balance
-            # effect as a deposit, so it races the same way.
-            # Shares the "airdrop" dedup label with the tx/executed path below so
-            # only one of the two can allocate. See _handle_airdrop_tx.
-            _handle_deposit(decoded, block_height, label="airdrop")
         elif topic == "reward":
             _handle_reward(decoded, block_height)
         elif topic in ("activate", "liquidate", "deactivate", "unstake"):
@@ -502,11 +489,12 @@ def _airdrop_amount_lux(call: dict, inner: dict) -> int:
 def _handle_airdrop_tx(decoded: dict, block_height: int | None) -> None:
     """[airdrop] Race a sozu_airdrop the same way we race a deposit.
 
-    Belt-and-braces second path: if sozu_airdrop emits the `donate` contract
-    event, on_event's donate branch already handled it and the shared "airdrop"
-    dedup label makes this call a no-op. If it emits no event we recognise, this
-    is the only path that sees the money. Whichever arrives first wins; the
-    other is dropped by _handle_deposit's 30s dedup.
+    sozu_airdrop arrives on exactly the stream stake_activate does: a moonlight
+    tx frame on tx/executed carrying call.fn_name + call.fn_args. Same shape,
+    same handling — read the amount out of fn_args and allocate it.
+
+    tx/executed rather than tx/included on purpose: executed means the money
+    has actually landed in the pool and `err` tells us it did not revert.
     """
     if not isinstance(decoded, dict):
         return

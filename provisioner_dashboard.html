@@ -3001,20 +3001,12 @@ let _ruesRawShowSet = null
 
 // Topic classification for two-row filter UI
 const _BLOCKS_TOPICS   = ['block_accepted']
-const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','sozu_airdrop','liquidate','reward','unstake','capacity_update']
-const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','sozu_airdrop','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
+const _CONTRACT_TOPICS        = ['activate','deactivate','deposit','donate','liquidate','reward','unstake','capacity_update']
+const _FILTER_CONTRACT_TOPICS = ['activate','deactivate','deposit','donate','liquidate','reward/recycle','reward/terminate','unstake','capacity_update']
 const _TX_TOPICS       = ['tx/included','tx/executed']
-// [airdrop] tx/airdrop is a VIRTUAL key like reward/recycle — there is no such
-// RUES subscription. sozu_airdrop is a function, not a topic, so it arrives
-// inside tx/included|tx/executed frames and is split out here by fn_name.
-// (The contract-event side of an airdrop is the `donate` chip above.)
-// Kept OUT of _TX_TOPICS on purpose: that list also feeds the subscription
-// chips, and subscribing to a virtual key would blow up _path() server-side.
-// Same split as _CONTRACT_TOPICS vs _FILTER_CONTRACT_TOPICS.
-const _FILTER_TX_TOPICS = [..._TX_TOPICS, 'tx/airdrop']
 // [slash_events] genesis stake contract topics
 const _STAKE_TOPICS    = ['slash','hard_slash']
-const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._STAKE_TOPICS, ..._FILTER_TX_TOPICS]
+const _ALL_FILTER_TOPICS = [..._BLOCKS_TOPICS, ..._FILTER_CONTRACT_TOPICS, ..._STAKE_TOPICS, ..._TX_TOPICS]
 // Display labels
 const _TOPIC_LABELS = {}
 // Raw tab: URL segment → internal key (fixes the broken mapping)
@@ -3024,7 +3016,6 @@ const _SEG_TO_KEY = {
   'deactivate': 'deactivate',
   'deposit':    'deposit',
   'donate':     'donate',
-  'sozu_airdrop': 'sozu_airdrop',   // [airdrop] real topic if the contract emits it
   'liquidate':  'liquidate',
   'reward':     'reward',  // wire sub stays as 'reward'; filter uses virtual keys below
   'reward/recycle':   'reward/recycle',
@@ -3058,21 +3049,6 @@ function _ruesToggleMine() {
     }
   }
   _pollRues()
-}
-
-// [airdrop] fn_name out of a decoded tx frame, whichever shape it arrives in.
-function _txFnName(dec) {
-  if (!dec || typeof dec !== 'object') return ''
-  const inner = dec.inner || dec
-  return ((inner.call || {}).fn_name) || ''
-}
-
-// [airdrop] Virtual filter key for a frame: reward → reward/<operation>,
-// an airdrop tx → tx/airdrop. Returns the topic unchanged otherwise.
-function _virtualKey(topic, dec) {
-  if (topic === 'reward' && dec && dec.operation) return `reward/${dec.operation}`
-  if (topic.startsWith('tx/') && _txFnName(dec) === 'sozu_airdrop') return 'tx/airdrop'
-  return topic
 }
 
 function _ownAddrs() {
@@ -3168,7 +3144,7 @@ async function _pollRues() {
     if (rawBlEl) rawBlEl.innerHTML = _BLOCKS_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     if (rawCoEl) rawCoEl.innerHTML = _FILTER_CONTRACT_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     if (rawStEl) rawStEl.innerHTML = _STAKE_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
-    if (rawTxEl) rawTxEl.innerHTML = _FILTER_TX_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
+    if (rawTxEl) rawTxEl.innerHTML = _TX_TOPICS.map(t => _rawChip(t, _ruesRawShowSet)).join('')
     _updateAllBtn('rues-raw-all-btn', _ruesRawShowSet, 'var(--yellow)')
 
     // ── Raw tab log ───────────────────────────────────────────────────────────
@@ -3177,17 +3153,15 @@ async function _pollRues() {
       const allRaw = d.raw_log || []
       const raw = allRaw.filter(f => {
         const loc   = (f.location || '').split('/').pop()
-        const baseTopic = _SEG_TO_KEY[loc] || loc
-        // Resolve to a virtual key from the payload: reward/<op>, or tx/airdrop
-        let topic = baseTopic
-        try {
-          topic = _virtualKey(baseTopic, JSON.parse(f.payload_text || '{}'))
-        } catch(e2) {}
-        // Match the virtual key OR the base topic, so checking tx/executed alone
-        // still shows airdrop frames (same forgiving rule as the events tab).
-        const shown = _ruesRawShowSet
-          ? (_ruesRawShowSet.has(topic) || _ruesRawShowSet.has(baseTopic))
-          : (!_DEFAULT_HIDDEN.has(topic) && !_DEFAULT_HIDDEN.has(baseTopic))
+        let topic = _SEG_TO_KEY[loc] || loc
+        // Resolve reward frames to virtual key by operation in payload
+        if (topic === 'reward') {
+          try {
+            const parsed = JSON.parse(f.payload_text || '{}')
+            if (parsed.operation) topic = `reward/${parsed.operation}`
+          } catch(e2) {}
+        }
+        const shown = _ruesRawShowSet ? _ruesRawShowSet.has(topic) : !_DEFAULT_HIDDEN.has(topic)
         if (!shown) return false
         if (_ruesMineOnly) {
           const txt = (f.payload_text || f.text || '')
@@ -3297,7 +3271,7 @@ async function _pollRues() {
     if (evBlEl) evBlEl.innerHTML = _BLOCKS_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     if (evCoEl) evCoEl.innerHTML = _FILTER_CONTRACT_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     if (evStEl) evStEl.innerHTML = _STAKE_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
-    if (evTxEl) evTxEl.innerHTML = _FILTER_TX_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
+    if (evTxEl) evTxEl.innerHTML = _TX_TOPICS.map(t => _evChip(t, _ruesShowSet)).join('')
     _updateAllBtn('rues-all-btn', _ruesShowSet, 'var(--teal)')
 
     // Event log — apply filter (virtual filters check decoded.operation for reward events)
@@ -3305,8 +3279,11 @@ async function _pollRues() {
     if (logEl) {
       const virt = d.virtual_filters || {}
       const entries = (d.log || []).filter(e => {
-        // Resolve to virtual key: reward/<operation>, or tx/airdrop by fn_name
-        const filterKey = _virtualKey(e.topic, e.decoded)
+        // Resolve reward to virtual key based on operation field
+        let filterKey = e.topic
+        if (e.topic === 'reward' && e.decoded && e.decoded.operation) {
+          filterKey = `reward/${e.decoded.operation}`
+        }
         const topicOk = _ruesShowSet
           ? _ruesShowSet.has(filterKey) || _ruesShowSet.has(e.topic)
           : !_DEFAULT_HIDDEN.has(filterKey) && !_DEFAULT_HIDDEN.has(e.topic)
@@ -3329,8 +3306,7 @@ async function _pollRues() {
                      : (e.topic === 'slash' || e.topic === 'hard_slash') ? 'var(--red)'
                      :                                'var(--teal)'
           const topicLabel = (e.topic === 'reward' && e.decoded && e.decoded.operation)
-            ? `reward · ${e.decoded.operation}`
-            : (_txFnName(e.decoded) === 'sozu_airdrop' ? `${e.topic} · sozu_airdrop` : e.topic)
+            ? `reward · ${e.decoded.operation}` : e.topic
 
           // Build detail line
           let detail = ''
