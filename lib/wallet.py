@@ -23,6 +23,12 @@ from .config import (
 #                 kept separate so dashboard reads never block fast-alloc
 _wallet_lock   = threading.Lock()
 _rotation_lock = threading.Lock()
+# tx_gate: [deposit_seed_split] held (re-entrantly) across a whole `--batch`
+#          queue … `batch propagate` sequence. The batch signs its nonces at
+#          queue time, so any other operator tx slipping in between would
+#          invalidate it. Taken before the per-command lock for every pool /
+#          batch command, so everything else waits until the batch is out.
+tx_gate        = threading.RLock()
 
 # ── Secret redaction ───────────────────────────────────────────────────────────
 # Masks wallet secrets in any command string before it is logged or returned to
@@ -312,8 +318,12 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
     _use_rot_lock = any(_stripped.startswith(p) for p in ("pool ", "stake-info", "substrate "))
     _lock = _rotation_lock if _use_rot_lock else _wallet_lock
 
-    with _lock:
-        result = run_cmd(cmd, timeout=timeout)
+    if _use_rot_lock or _stripped.startswith("batch"):
+        with tx_gate, _lock:
+            result = run_cmd(cmd, timeout=timeout)
+    else:
+        with _lock:
+            result = run_cmd(cmd, timeout=timeout)
     result["cmd"] = log_cmd
     # Defence in depth: mask the password if the CLI echoes its argv back on
     # error, before the output is returned or pushed to the command panel.

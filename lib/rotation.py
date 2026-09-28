@@ -30,8 +30,11 @@ Rotation window sequence (at rot_win entry, guarded by pre-check):
   4. stake_activate(rot_slave, pool)  → bulk freed stake to ta=1 node
 
 Deposit race integration:
-  - Deposits ≥ 1000 DUSK arriving between 10-block checks also trigger seeding
-    (via events.py calling seed_if_needed() — fast path, no polling wait)
+  - A:1 M:0 I:1: the race would drain every deposit into rot_active, so the
+    pool never reaches 1000 for the state-check seed. A deposit ≥ 1000 DUSK is
+    split instead (events._do_seed_split): 1000 seeds the inactive node, the
+    rest tops up rot_active, one wallet batch → same block. The state check
+    holds off while that seed is in flight (claim_seed_inflight).
   - Deposit race is paused during IN_PROGRESS (is_rotation_in_progress())
 """
 
@@ -248,6 +251,39 @@ def reset_error() -> None:
 def is_rotation_in_progress() -> bool:
     with _state_lock:
         return _rotation_state["state"] == IN_PROGRESS
+
+
+def is_rotation_enabled() -> bool:
+    with _state_lock:
+        return bool(_rotation_state["enabled"]) and _rotation_state["state"] != ERROR
+
+
+# [deposit_seed_split] A seed fired by the deposit race is in flight until this
+# wall-clock ts (0 = none). The state check must not fire a second seed for the
+# same inactive node while the first is still unconfirmed.
+_seed_inflight_until: float = 0.0
+
+
+def claim_seed_inflight(seconds: float) -> bool:
+    """Reserve the rotation-pair seed slot. False if a seed is already in flight."""
+    global _seed_inflight_until
+    with _state_lock:
+        now = time.time()
+        if _seed_inflight_until > now:
+            return False
+        _seed_inflight_until = now + seconds
+        return True
+
+
+def release_seed_inflight() -> None:
+    global _seed_inflight_until
+    with _state_lock:
+        _seed_inflight_until = 0.0
+
+
+def is_seed_inflight() -> bool:
+    with _state_lock:
+        return _seed_inflight_until > time.time()
 
 
 def seed_if_needed(amount_dusk: float, source: str) -> bool:
@@ -836,6 +872,9 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
 
         # ── A:1 M:0 I:1 → seed inactive ──────────────────────────────────────
         if len(active) == 1 and len(maturing) == 0 and len(inactive) == 1:
+            if is_seed_inflight():
+                _rlog_info(f"no rot_slave — deposit-race seed of prov[{inactive[0]}] in flight, waiting")
+                return
             _rlog_warn(f"no rot_slave — seeding inactive prov[{inactive[0]}] with {SEED_DUSK:.0f} DUSK")
             threading.Thread(target=_seed_node,
                              args=(inactive[0], SEED_DUSK, "periodic check", nodes),

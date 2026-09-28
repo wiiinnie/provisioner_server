@@ -14,14 +14,17 @@ Allocation rules per window:
     reward/recycle    → allocate
     reward/terminate  → always allocate
 
+No rot_slave (rotation pair A:1 M:0 I:1), deposit ≥ 1000 DUSK:
+    one batch: seed the inactive rot node 1000 + rest → rot_active (same block)
+
 3-step deposit race flow:
   Step 1 (deposit_received):  event arrived, stake-activate fired
   Step 2 (tx_confirmed/failed): tx/executed result — win/loss decided here
   Step 3 (activate_confirmed): activate contract event — stake is live on-chain
 
 ⚠ TODO:
-  - Target selection incomplete: active top-up, multi-node split, capacity check,
-    seed reservation, configurable override
+  - Target selection incomplete: multi-node split beyond the seed split,
+    configurable override
   - Threshold check bypassed (if False) — re-enable when stable
   - Deposit ownership filtering (depositor address) — "we need this later"
   - block_height None for contract events — wire up block cache backfill
@@ -63,6 +66,10 @@ _pending_lock               = threading.Lock()
 # When an activate event arrives for one of these addresses, we skip deposit log.
 _sweeper_activations: set  = set()
 _sweeper_lock               = threading.Lock()
+
+# [deposit_seed_split]
+SEED_DUSK: float            = 1000.0
+_SEED_INFLIGHT_SECS: float  = 180.0
 
 def mark_sweeper_activation(addr: str) -> None:
     """Called by rotation.py after sweeper fires stake_activate.
@@ -227,6 +234,33 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
         _dlog({"type":"deposit_skipped","step":0,
                "msg":f"{label} {amount_dusk:,.4f} DUSK < {threshold:,.0f} min ({window}) — skip",
                "amount":amount_dusk,"window":window,"ok":False})
+        return
+
+    # [deposit_seed_split] No rot_slave → spend 1000 of this deposit on seeding
+    # the inactive rotation node, remainder tops up rot_active in the same block.
+    split = _pick_seed_split(amount_lux)
+    if split:
+        seed_idx, seed_addr, act_idx, act_addr = split
+        _gk = f"{round(amount_lux/1e9,4)}|{round(time.time())}"
+        _dlog({
+            "type":      "deposit_received",
+            "step":      1,
+            "msg":       (f"{label} {amount_dusk:,.4f} DUSK ({window}) → no rot_slave: "
+                          f"seed prov[{seed_idx}] {SEED_DUSK:,.0f} + rest → prov[{act_idx}] (batch)…"),
+            "amount":    amount_dusk,
+            "window":    window,
+            "depositor": depositor,
+            "block":     block_height,
+            "prov_idx":  seed_idx,
+            "prov_addr": seed_addr,
+            "group_key": _gk,
+            "ok":        True,
+        })
+        threading.Thread(
+            target=_do_seed_split,
+            args=(seed_idx, seed_addr, act_idx, act_addr, amount_lux, block_height, _gk),
+            daemon=True,
+        ).start()
         return
 
     target_idx, target_addr = _pick_target(window)
@@ -431,6 +465,168 @@ def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None
         p = _pending_activations.get(addr)
         if p:
             p["sent_ts"] = t_sent
+
+
+def _pick_seed_split(amount_lux: int) -> tuple | None:
+    """
+    [deposit_seed_split] Rotation pair is A:1 M:0 I:1 (rot_active, no rot_slave,
+    one inactive) — e.g. after a manual unstake. The state check would seed the
+    inactive node from the pool, but the race empties the pool into rot_active
+    before it ever holds 1000 DUSK. So a deposit ≥ SEED_DUSK is split instead:
+    SEED_DUSK seeds the inactive node, the rest tops up rot_active.
+
+    Returns (seed_idx, seed_addr, active_idx, active_addr) or None (→ normal race).
+    Uses cached assess + capacity — no wallet subprocess on the hot path.
+    """
+    if amount_lux < round(SEED_DUSK * 1e9):
+        return None
+    try:
+        from .rotation import is_rotation_enabled, is_seed_inflight
+        if not is_rotation_enabled() or is_seed_inflight():
+            return None
+
+        from .assess import _assess_state_cached, _fetch_capacity_cached
+        from .wallet import get_password
+        pw    = get_password() or ""
+        nodes = _assess_state_cached(0, pw).get("by_idx", {})
+        active   = [i for i in ROTATION_PAIR if nodes.get(i, {}).get("status") == "active"]
+        maturing = [i for i in ROTATION_PAIR if nodes.get(i, {}).get("status") in ("maturing", "seeded")]
+        inactive = [i for i in ROTATION_PAIR if nodes.get(i, {}).get("status") == "inactive"]
+        if not (len(active) == 1 and not maturing and len(inactive) == 1):
+            return None
+        seed_idx, act_idx = inactive[0], active[0]
+
+        # Residual rewards need _seed_node's liquidate+terminate reset first —
+        # too slow for a race; leave that case to the state check.
+        if nodes.get(seed_idx, {}).get("reward_dusk", 0.0) > 0:
+            return None
+
+        # The CLI batch queue is shared with the dashboard's manual batch panel;
+        # propagating would send the operator's queued txs along with ours.
+        from . import batchq
+        if batchq.entries():
+            _log("[events] seed split skipped — manual batch queue not empty")
+            return None
+
+        cap = _fetch_capacity_cached(pw)
+        if cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0) < SEED_DUSK:
+            return None
+
+        def _a(i: int) -> str:
+            n = nodes.get(i, {})
+            return cfg(f"prov_{i}_address") or n.get("staking_address") or n.get("address") or ""
+        seed_addr, act_addr = _a(seed_idx), _a(act_idx)
+        if not seed_addr or not act_addr:
+            return None
+        return seed_idx, seed_addr, act_idx, act_addr
+    except Exception as e:
+        _log(f"[events] _pick_seed_split error: {e}")
+        return None
+
+
+def _do_seed_split(seed_idx: int, seed_addr: str, act_idx: int, act_addr: str,
+                   amount_lux: int, deposit_block: int | None, group_key: str) -> None:
+    """
+    [deposit_seed_split] Seed the inactive rot node with SEED_DUSK and top up
+    rot_active with the rest, both in ONE wallet batch → same block, nonces
+    ordered by the wallet (two separate txs would collide in the mempool).
+    Remainder too small / no slash headroom → seed alone, rest stays in pool.
+    """
+    from .wallet import operator_cmd, get_password, tx_gate, WALLET_PATH
+    from .rotation import claim_seed_inflight, release_seed_inflight
+    from .rues import register_tx_confirm, get_tx_confirm_result
+
+    if not claim_seed_inflight(_SEED_INFLIGHT_SECS):
+        # A concurrent deposit got the seed — this one races normally.
+        idx, addr = _pick_target(_current_window(deposit_block))
+        if idx is not None:
+            _do_allocate(idx, addr, amount_lux, deposit_block, group_key)
+        return
+
+    pw       = get_password() or ""
+    seed_lux = round(SEED_DUSK * 1e9)
+    rest_lux = amount_lux - seed_lux
+    try:
+        from .assess import _fetch_capacity_cached, _invalidate_capacity_cache, _max_topup_active
+        cap       = _fetch_capacity_cached(pw)
+        elig_lux  = int(round(max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0)) * 1e9))
+        slash_lux = int(round(_max_topup_active(cap) * 1e9))
+        rest_lux  = max(0, min(rest_lux, elig_lux - seed_lux, slash_lux))
+        _invalidate_capacity_cache()
+    except Exception as e:
+        _log(f"[events] seed split capacity error: {e} — seeding only")
+        rest_lux = 0
+    if rest_lux < round(float(cfg("min_deposit_dusk") or 100.0) * 1e9):
+        rest_lux = 0
+
+    legs = [(seed_idx, seed_addr, seed_lux)] + ([(act_idx, act_addr, rest_lux)] if rest_lux else [])
+    t_start = time.time()
+    for idx, addr, lux in legs:
+        with _pending_lock:
+            _pending_activations[addr] = {
+                "wall_ts": t_start, "amount_dusk": lux / 1e9, "deposit_block": deposit_block,
+                "prov_idx": idx, "included_ts": None, "group_key": group_key,
+            }
+        with _race_lost_lock:
+            _race_lost_amounts[round(lux / 1e9, 4)] = {
+                "ts": t_start, "wall_ts": t_start, "group_key": group_key,
+                "winner_included_ts": None,
+            }
+
+    def _activate(addr: str, lux: int, batch: bool) -> dict:
+        return operator_cmd(
+            f"pool stake-activate --skip-confirmation{' --batch' if batch else ''} "
+            f"--amount {lux} "
+            f"--provisioner {addr} "
+            f"--provisioner-wallet {WALLET_PATH} "
+            f"--provisioner-password '{pw}'",
+            timeout=120, password=pw,
+        )
+
+    seed_evt = register_tx_confirm("stake_activate", seed_addr)
+    if len(legs) == 1:
+        r = _activate(seed_addr, seed_lux, batch=False)
+    else:
+        with tx_gate:
+            r = _activate(seed_addr, seed_lux, batch=True)
+            if r.get("ok"):
+                r = _activate(act_addr, rest_lux, batch=True)
+            if r.get("ok"):
+                r = operator_cmd("batch propagate --skip-confirmation --format json",
+                                 timeout=180, password=pw)
+            if not r.get("ok"):
+                operator_cmd("batch clear", timeout=30, password=pw)
+
+    split_str = f"seed prov[{seed_idx}] {SEED_DUSK:,.0f}" + (
+        f" + prov[{act_idx}] {rest_lux/1e9:,.4f}" if rest_lux else " (rest stays in pool)")
+    if not r.get("ok"):
+        _dlog({"type": "deposit_error", "step": 1,
+               "msg": f"seed split failed ({split_str}): {(r.get('stderr') or '')[:160]} — state check retries the seed",
+               "amount": amount_lux / 1e9, "group_key": group_key, "ok": False})
+        with _pending_lock:
+            for _, addr, _ in legs:
+                _pending_activations.pop(addr, None)
+        release_seed_inflight()
+        return
+
+    with _pending_lock:
+        for _, addr, _ in legs:
+            if addr in _pending_activations:
+                _pending_activations[addr]["sent_ts"] = time.time()
+    _log(f"[events] seed split sent: {split_str} DUSK")
+
+    # Hold the seed slot until the seed lands so the state check doesn't fire a
+    # second seed for the same node; on timeout the claim just expires.
+    if seed_evt.wait(timeout=120):
+        res = get_tx_confirm_result("stake_activate", seed_addr)
+        if (res or {}).get("err"):
+            _log(f"[events] seed split: seed of prov[{seed_idx}] reverted: {str(res['err'])[:120]}")
+        try:
+            from .assess import _invalidate_assess_cache
+            _invalidate_assess_cache()
+        except Exception:
+            pass
+        release_seed_inflight()
 
 
 def _warm_caches() -> None:
