@@ -1571,10 +1571,10 @@ def _run_rotation(cur_epoch: int) -> None:
 
         # ── Step 3: allocate bulk to rot_slave (ta=1) ─────────────────────────
         # Allocate BEFORE re-seeding so the large amount lands safely first.
-        # Cap to available global capacity — active_current already includes locked.
-        # No capacity cap here — rotation recycles existing stake, not new external DUSK.
-        # active_current after liquidation = active_current before - (stake + locked),
-        # and we re-allocate exactly that amount back. Net capacity change = zero.
+        # Recycling the liquidated stake is capacity-neutral: active_current dropped
+        # by (stake + locked) and we put that amount back. The terminate rewards
+        # are NOT neutral — they were never in active_current, so re-staking them
+        # grows it.
         alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK)
         _rlog_step(f"[3/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
         _rlog_info(
@@ -1582,6 +1582,26 @@ def _run_rotation(cur_epoch: int) -> None:
             f"terminate freed {freed_by_terminate:.4f} DUSK - "
             f"seed {SEED_DUSK:.0f} DUSK"
             f" = {alloc_dusk:.4f} DUSK to allocate")
+
+        # [seed_capacity_reserve] At the cap, the re-staked rewards eat the headroom
+        # the [4/4] re-seed needs → seed reverts "should have enough max capacity"
+        # and the pair is stuck A:1 M:0 I:1. Keep SEED_DUSK of headroom free; the
+        # surplus stays in the pool. Never clamp below the recycled stake itself
+        # (capacity-neutral, always fits) so a bad capacity read can't strand it.
+        try:
+            from .assess import _fetch_capacity_cached
+            _cap = _fetch_capacity_cached(_pw(), force=True)
+            if _cap.get("active_maximum", 0.0) > 0:
+                _reserve  = SEED_DUSK + 0.001   # float slack, cap is DUSK floats
+                _headroom = _cap["active_maximum"] - _cap.get("active_current", 0.0)
+                _fits     = max(0.0, _headroom - _reserve, freed_by_liquidate - _reserve)
+                if alloc_dusk > _fits:
+                    _rlog_warn(f"[3/4] capacity headroom {_headroom:.4f} DUSK — allocating {_fits:.4f} "
+                               f"instead of {alloc_dusk:.4f} to keep {SEED_DUSK:.0f} DUSK free for the "
+                               f"re-seed; {alloc_dusk - _fits:.4f} DUSK stays in pool")
+                    alloc_dusk = _fits
+        except Exception as _cap_err:
+            _rlog_warn(f"[3/4] capacity check error: {_cap_err} — allocating unclamped")
 
         # [pool_balance_clamp] clamp to actual pool balance before activation
         from .pool import clamp_to_pool_balance
