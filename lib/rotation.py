@@ -910,6 +910,9 @@ def _run_state_check(block_height: int, cur_epoch: int, blk_left: int) -> None:
 
         # ── A:0 M:1 I:1 → seed inactive ──────────────────────────────────────
         if len(active) == 0 and len(maturing) == 1 and len(inactive) == 1:
+            if is_seed_inflight():
+                _rlog_info(f"no active provisioner — deposit-race seed of prov[{inactive[0]}] in flight, waiting")
+                return
             _rlog_warn(f"no active provisioner, one maturing — seeding prov[{inactive[0]}]")
             threading.Thread(target=_seed_node,
                              args=(inactive[0], SEED_DUSK, "periodic check", nodes),
@@ -1603,9 +1606,15 @@ def _run_rotation(cur_epoch: int) -> None:
         except Exception as _cap_err:
             _rlog_warn(f"[3/4] capacity check error: {_cap_err} — allocating unclamped")
 
-        # [pool_balance_clamp] clamp to actual pool balance before activation
+        # [pool_balance_clamp] clamp to actual pool balance before activation.
+        # [seed_pool_reserve] Keep SEED_DUSK in the pool for the [4/4] re-seed:
+        # user unstakes are served from the pool, so one landing between the
+        # liquidate and here (26.8k DUSK in the terminate block, testnet epoch
+        # 2076) otherwise lets the clamp hand the whole pool to rot_slave and
+        # the seed reverts "should not exceed the pending stake".
         from .pool import clamp_to_pool_balance
-        alloc_dusk = clamp_to_pool_balance(alloc_dusk, f"[3/4] alloc[prov{rot_slave_idx}]")
+        alloc_dusk = clamp_to_pool_balance(alloc_dusk, f"[3/4] alloc[prov{rot_slave_idx}]",
+                                           reserve_dusk=SEED_DUSK)
         if alloc_dusk < 10.0:
             _rlog_warn(f"[3/4] only {alloc_dusk:.2f} DUSK to allocate — nothing sent to rot_slave")
         else:
@@ -1642,6 +1651,27 @@ def _run_rotation(cur_epoch: int) -> None:
 
         # ── Step 4: re-seed rot_active → ta=2 ────────────────────────────────
         _rlog_step(f"[4/4] re-seed prov[{rot_active_idx}] with {SEED_DUSK:.0f} DUSK → rot_seeded (ta=2)")
+        # [seed_pool_reserve] The seed is a fixed 1000 DUSK and reverts on-chain
+        # when the pool holds less (unstakes keep draining it). Check first and
+        # leave the retry to the state check / deposit-race seed split instead of
+        # burning a reverted tx. A failed query sends the seed unchecked.
+        try:
+            from .pool import _query_pool_balance_dusk as _seed_pool_q
+            _seed_pool = _seed_pool_q(strict=True)
+        except Exception as _pe:
+            _rlog_warn(f"[4/4] pool balance query failed ({_pe}) — sending the seed unchecked")
+            _seed_pool = None
+        if _seed_pool is not None and _seed_pool < SEED_DUSK:
+            _rlog_warn(f"[4/4] pool {_seed_pool:.4f} < {SEED_DUSK:.0f} DUSK — re-seed skipped; "
+                       f"state check retries from pool, the next deposit ≥ {SEED_DUSK:.0f} DUSK "
+                       f"is split to seed prov[{rot_active_idx}]")
+            _alert_rotation_failure(cur_epoch,
+                                    f"[4/4] re-seed of prov[{rot_active_idx}] skipped — pool "
+                                    f"{_seed_pool:,.0f} DUSK < {SEED_DUSK:.0f}",
+                                    "pool drained below the seed amount (user unstakes are served from the pool)",
+                                    "no new rot_seeded node — state check retries from pool; the next "
+                                    f"deposit ≥ {SEED_DUSK:.0f} DUSK is split to seed it")
+            _set_state(ROTATING); _bump_epoch(cur_epoch); return
         seed_evt = register_tx_confirm("stake_activate", rot_active_addr)
         seed_lux = round(SEED_DUSK * 1e9)
         r_seed   = _cmd(

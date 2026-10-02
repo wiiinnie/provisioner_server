@@ -236,17 +236,20 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
                "amount":amount_dusk,"window":window,"ok":False})
         return
 
-    # [deposit_seed_split] No rot_slave → spend 1000 of this deposit on seeding
-    # the inactive rotation node, remainder tops up rot_active in the same block.
-    split = _pick_seed_split(amount_lux)
+    # [deposit_seed_split] Rotation pair one node short → spend 1000 of this
+    # deposit on seeding the inactive rotation node, remainder tops up the
+    # partner (rot_active, or rot_slave inside the window) in the same block.
+    split = _pick_seed_split(amount_lux, window)
     if split:
-        seed_idx, seed_addr, act_idx, act_addr = split
+        seed_idx, seed_addr, act_idx, act_addr, act_active = split
         _gk = f"{round(amount_lux/1e9,4)}|{round(time.time())}"
+        _rest = (f" + rest → prov[{act_idx}] (batch)…" if act_idx is not None
+                 else " (rest stays in pool)…")
         _dlog({
             "type":      "deposit_received",
             "step":      1,
-            "msg":       (f"{label} {amount_dusk:,.4f} DUSK ({window}) → no rot_slave: "
-                          f"seed prov[{seed_idx}] {SEED_DUSK:,.0f} + rest → prov[{act_idx}] (batch)…"),
+            "msg":       (f"{label} {amount_dusk:,.4f} DUSK ({window}) → rot pair short one node: "
+                          f"seed prov[{seed_idx}] {SEED_DUSK:,.0f}{_rest}"),
             "amount":    amount_dusk,
             "window":    window,
             "depositor": depositor,
@@ -258,7 +261,7 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
         })
         threading.Thread(
             target=_do_seed_split,
-            args=(seed_idx, seed_addr, act_idx, act_addr, amount_lux, block_height, _gk),
+            args=(seed_idx, seed_addr, act_idx, act_addr, act_active, amount_lux, block_height, _gk),
             daemon=True,
         ).start()
         return
@@ -467,15 +470,22 @@ def _do_allocate(idx: int, addr: str, amount_lux: int, deposit_block: int | None
             p["sent_ts"] = t_sent
 
 
-def _pick_seed_split(amount_lux: int) -> tuple | None:
+def _pick_seed_split(amount_lux: int, window: str = "regular") -> tuple | None:
     """
-    [deposit_seed_split] Rotation pair is A:1 M:0 I:1 (rot_active, no rot_slave,
-    one inactive) — e.g. after a manual unstake. The state check would seed the
-    inactive node from the pool, but the race empties the pool into rot_active
-    before it ever holds 1000 DUSK. So a deposit ≥ SEED_DUSK is split instead:
-    SEED_DUSK seeds the inactive node, the rest tops up rot_active.
+    [deposit_seed_split] Rotation pair is one node short:
+      A:1 M:0 I:1 — rot_active, no rot_slave (e.g. after a manual unstake)
+      A:0 M:1 I:1 — rot_slave at ta=1, no rot_active (e.g. after a failed
+                    [4/4] re-seed; testnet epoch 2076 — a 468k deposit went
+                    entirely to the maturing node and prov[2] stayed empty)
+    The state check would seed the inactive node from the pool, but the race
+    empties the pool into the partner — or user unstakes drain it — before it
+    ever holds 1000 DUSK. So a deposit ≥ SEED_DUSK is split instead: SEED_DUSK
+    seeds the inactive node, the rest tops up the partner. An active partner
+    takes the rest in any window; a maturing partner only in the rotation/snatch
+    window (same rule as _pick_target) — otherwise the rest stays in the pool.
 
-    Returns (seed_idx, seed_addr, active_idx, active_addr) or None (→ normal race).
+    Returns (seed_idx, seed_addr, partner_idx, partner_addr, partner_active) or
+    None (→ normal race); partner_idx is None when only the seed leg is sent.
     Uses cached assess + capacity — no wallet subprocess on the hot path.
     """
     if amount_lux < round(SEED_DUSK * 1e9):
@@ -492,9 +502,19 @@ def _pick_seed_split(amount_lux: int) -> tuple | None:
         active   = [i for i in ROTATION_PAIR if nodes.get(i, {}).get("status") == "active"]
         maturing = [i for i in ROTATION_PAIR if nodes.get(i, {}).get("status") in ("maturing", "seeded")]
         inactive = [i for i in ROTATION_PAIR if nodes.get(i, {}).get("status") == "inactive"]
-        if not (len(active) == 1 and not maturing and len(inactive) == 1):
+        if len(inactive) != 1 or len(active) + len(maturing) != 1:
             return None
-        seed_idx, act_idx = inactive[0], active[0]
+        seed_idx = inactive[0]
+        if active:
+            act_idx, act_active = active[0], True
+        else:
+            # Partner must be ta=1: seeding next to a ta=2 node leaves both at
+            # ta=2 (bad stagger — the state check would deactivate one again).
+            if nodes.get(maturing[0], {}).get("ta") != 1:
+                return None
+            act_idx, act_active = maturing[0], False
+            if window not in ("rotation", "snatch"):
+                act_idx = None      # seed only; rest stays in pool (see _pick_target)
 
         # Residual rewards need _seed_node's liquidate+terminate reset first —
         # too slow for a race; leave that case to the state check.
@@ -515,22 +535,25 @@ def _pick_seed_split(amount_lux: int) -> tuple | None:
         def _a(i: int) -> str:
             n = nodes.get(i, {})
             return cfg(f"prov_{i}_address") or n.get("staking_address") or n.get("address") or ""
-        seed_addr, act_addr = _a(seed_idx), _a(act_idx)
-        if not seed_addr or not act_addr:
+        seed_addr = _a(seed_idx)
+        act_addr  = _a(act_idx) if act_idx is not None else None
+        if not seed_addr or (act_idx is not None and not act_addr):
             return None
-        return seed_idx, seed_addr, act_idx, act_addr
+        return seed_idx, seed_addr, act_idx, act_addr, act_active
     except Exception as e:
         _log(f"[events] _pick_seed_split error: {e}")
         return None
 
 
-def _do_seed_split(seed_idx: int, seed_addr: str, act_idx: int, act_addr: str,
-                   amount_lux: int, deposit_block: int | None, group_key: str) -> None:
+def _do_seed_split(seed_idx: int, seed_addr: str, act_idx: int | None, act_addr: str | None,
+                   act_active: bool, amount_lux: int, deposit_block: int | None,
+                   group_key: str) -> None:
     """
     [deposit_seed_split] Seed the inactive rot node with SEED_DUSK and top up
-    rot_active with the rest, both in ONE wallet batch → same block, nonces
+    the partner with the rest, both in ONE wallet batch → same block, nonces
     ordered by the wallet (two separate txs would collide in the mempool).
-    Remainder too small / no slash headroom → seed alone, rest stays in pool.
+    Remainder too small / no headroom / no partner leg → seed alone, rest
+    stays in pool. The slash clamp applies only to an active partner.
     """
     from .wallet import operator_cmd, get_password, tx_gate, WALLET_PATH
     from .rotation import claim_seed_inflight, release_seed_inflight
@@ -545,13 +568,14 @@ def _do_seed_split(seed_idx: int, seed_addr: str, act_idx: int, act_addr: str,
 
     pw       = get_password() or ""
     seed_lux = round(SEED_DUSK * 1e9)
-    rest_lux = amount_lux - seed_lux
+    rest_lux = (amount_lux - seed_lux) if act_idx is not None else 0
     try:
         from .assess import _fetch_capacity_cached, _invalidate_capacity_cache, _max_topup_active
         cap       = _fetch_capacity_cached(pw)
         elig_lux  = int(round(max(0.0, cap.get("active_maximum", 0.0) - cap.get("active_current", 0.0)) * 1e9))
-        slash_lux = int(round(_max_topup_active(cap) * 1e9))
-        rest_lux  = max(0, min(rest_lux, elig_lux - seed_lux, slash_lux))
+        rest_lux  = max(0, min(rest_lux, elig_lux - seed_lux))
+        if act_active:
+            rest_lux = min(rest_lux, int(round(_max_topup_active(cap) * 1e9)))
         _invalidate_capacity_cache()
     except Exception as e:
         _log(f"[events] seed split capacity error: {e} — seeding only")

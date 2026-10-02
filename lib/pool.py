@@ -19,8 +19,12 @@ _pool_balance_lock            = threading.Lock()
 POOL_CACHE_STALE_SECS: int    = 300
 
 
-def _query_contract_total_dusk() -> float:
-    """Query total allocatable DUSK in the SOZU pool contract."""
+def _query_contract_total_dusk(strict: bool = False) -> float:
+    """Query total allocatable DUSK in the SOZU pool contract.
+
+    strict=True raises on a failed/undecodable query instead of returning 0.0,
+    for callers that must tell "pool is empty" from "query failed".
+    """
     url = (f"{_NODE_STATE_URL}/on/contracts:"
            "0100000000000000000000000000000000000000000000000000000000000000"
            "/contract_balance")
@@ -43,12 +47,14 @@ def _query_contract_total_dusk() -> float:
     except Exception:
         pass
     _log(f"[pool] contract balance decode failed: {raw!r}")
+    if strict:
+        raise ValueError(f"pool balance decode failed: {raw[:80]!r}")
     return 0.0
 
 
-def _query_pool_balance_dusk(staked_dusk: float = 0.0) -> float:
+def _query_pool_balance_dusk(staked_dusk: float = 0.0, strict: bool = False) -> float:
     """Query allocatable DUSK in the SOZU pool. stdout only — not rotation log."""
-    available = _query_contract_total_dusk()
+    available = _query_contract_total_dusk(strict=strict)
     _log(f"[pool] balance: {available:.4f} DUSK")
     return available
 
@@ -77,8 +83,17 @@ def _fast_alloc_pool() -> float:
 
 
 # ── [pool_balance_clamp] safety helper ────────────────────────────────────
-def clamp_to_pool_balance(intended_dusk: float, ctx: str) -> float:
+def clamp_to_pool_balance(intended_dusk: float, ctx: str, reserve_dusk: float = 0.0) -> float:
     """Cap intended stake_activate amount at the actual on-chain pool balance.
+
+    [seed_pool_reserve] `reserve_dusk` is DUSK that must still be in the pool
+    AFTER this activation — e.g. the 1000 DUSK re-seed that follows the [3/4]
+    rotation allocation. The clamp is applied to (pool − reserve), so a user
+    unstake served from the pool between our liquidate and this activation
+    shrinks the allocation, not the seed. (Testnet epoch 2076, 2026-10-02: a
+    26.8k unstake landed in the terminate block, the clamp handed the whole
+    pool to rot_slave, and the re-seed reverted "should not exceed the
+    pending stake".)
 
     The chain rejects stake_activate when amount > pool_contract_balance with:
         'Panic: [pool] The stake activation amount should not exceed the
@@ -98,14 +113,18 @@ def clamp_to_pool_balance(intended_dusk: float, ctx: str) -> float:
     own minimum-threshold check (e.g. < 10 DUSK → skip).
     """
     try:
-        pool_dusk = _query_pool_balance_dusk()
+        # strict: a failed query must not read as "pool empty" — that would
+        # clamp a full rotation allocation to 0 and strand it through snatch.
+        pool_dusk = _query_pool_balance_dusk(strict=True)
     except Exception as e:
         _log(f"[pool-clamp] {ctx}: balance query failed ({e}) — "
              f"proceeding with intended {intended_dusk:.4f} DUSK")
         return intended_dusk
 
-    if intended_dusk > pool_dusk:
+    available = max(0.0, pool_dusk - max(0.0, reserve_dusk))
+    if intended_dusk > available:
+        _res = f" − reserve {reserve_dusk:.0f}" if reserve_dusk > 0 else ""
         _log(f"[pool-clamp] {ctx}: drift — intended {intended_dusk:.4f} > "
-             f"pool {pool_dusk:.4f} DUSK — clamping")
-        return max(0.0, pool_dusk)
+             f"pool {pool_dusk:.4f}{_res} DUSK — clamping to {available:.4f}")
+        return available
     return intended_dusk

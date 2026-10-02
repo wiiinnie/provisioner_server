@@ -441,7 +441,8 @@ def _pool_tx_confirmed(R, kind: str, addr: str,
     if not r.get("ok"):
         err = r.get("stderr", "")[:300]
         if any(x in err.lower() for x in ("no stake", "does not exist",
-                                          "nothing to", "not eligible")):
+                                          "nothing to", "not eligible",
+                                          "should be active")):
             return True, True
         _rdlog_err(f"{kind} prov@{addr[:12]}…: CLI failed: {err}")
         return False, False
@@ -450,7 +451,14 @@ def _pool_tx_confirmed(R, kind: str, addr: str,
         return False, False
     res = get_tx_confirm_result(kind, addr)
     if (res or {}).get("err"):
-        _rdlog_err(f"{kind} REVERTED: {str(res['err'])[:200]}")
+        err = str(res["err"])
+        if kind == "liquidate" and "should be active" in err.lower():
+            # [pool] "The provisioner should be active" — nothing staked on
+            # this node (testnet 2026-10-02 03:43: cur_master prov[0] was
+            # already empty). Benign no-op, not a failure.
+            _rdlog_warn(f"{kind} prov@{addr[:12]}…: nothing staked ({err[:80]}) — treating as empty")
+            return True, True
+        _rdlog_err(f"{kind} REVERTED: {err[:200]}")
         return False, False
     if gap:
         blk = (res or {}).get("block_height", 0)
@@ -565,32 +573,57 @@ def perform_consolidate(cur_epoch: int) -> bool:
                 f"target={target_dusk:.0f} | excess={excess:.0f}")
 
     # ── Step 1: liquidate cur_master → pool (PRE-COMMIT: abort keeps master) ──
-    _rdlog_step(f"[1/7] liquidate cur_master prov[{cur_master_idx}] ({master_stake:.0f} DUSK)")
-    ok, empty = _pool_tx_confirmed(R, "liquidate", cur_master_addr,
-                                   register_tx_confirm, get_tx_confirm_result, wait_for_block)
-    if empty:
-        _rdlog_warn("[1/7] cur_master already empty — nothing to consolidate; aborting cleanly")
-        _notify_failed("cur_master had no stake to liquidate — nothing to do")
+    # [empty_master] An empty cur_master (already unstaked / hopped away) is no
+    # reason to abort: the excess on rot_master still wants to move onto
+    # new_master. Skip the master steps and consolidate the rotation side only.
+    master_empty = master_stake <= 0.0 and master_locked <= 0.0
+    freed        = 0.0
+    if master_empty and excess < SEED_DUSK:
+        _rdlog_warn(f"[1/7] cur_master prov[{cur_master_idx}] empty and rot_master excess "
+                    f"{excess:.0f} < {SEED_DUSK:.0f} DUSK — nothing to consolidate; aborting cleanly")
+        _notify_failed("cur_master empty and no rot_master excess — nothing to do")
         reset()
         return False
-    if not ok:
-        _rdlog_err("[1/7] liquidate cur_master failed/timeout — master untouched, aborting "
-                   "(normal rotation will run)")
-        _notify_failed("cur_master liquidate failed — aborted, master intact")
-        reset()
-        return False
-    freed = master_stake + master_locked
-    _rdlog_ok(f"[1/7] cur_master liquidated — {freed:.0f} DUSK freed to pool")
+    if master_empty:
+        _rdlog_warn(f"[1/7] cur_master prov[{cur_master_idx}] has no stake — skipping master "
+                    f"liquidate/terminate, moving the rot_master excess ({excess:.0f} DUSK) only")
+    else:
+        _rdlog_step(f"[1/7] liquidate cur_master prov[{cur_master_idx}] ({master_stake:.0f} DUSK)")
+        ok, empty = _pool_tx_confirmed(R, "liquidate", cur_master_addr,
+                                       register_tx_confirm, get_tx_confirm_result, wait_for_block)
+        if empty:
+            _rdlog_warn("[1/7] cur_master reverted as empty (assess was stale) — continuing "
+                        "without master stake")
+            master_empty = True
+            if excess < SEED_DUSK:
+                _rdlog_warn(f"[1/7] rot_master excess {excess:.0f} < {SEED_DUSK:.0f} DUSK — "
+                            f"nothing to consolidate; aborting cleanly")
+                _notify_failed("cur_master empty and no rot_master excess — nothing to do")
+                reset()
+                return False
+        elif not ok:
+            _rdlog_err("[1/7] liquidate cur_master failed/timeout — master untouched, aborting "
+                       "(normal rotation will run)")
+            _notify_failed("cur_master liquidate failed — aborted, master intact")
+            reset()
+            return False
+        else:
+            freed = master_stake + master_locked
+            _rdlog_ok(f"[1/7] cur_master liquidated — {freed:.0f} DUSK freed to pool")
 
-    # ══ COMMITTED: we own the window now; every exit below returns True ═══════
+    # ══ COMMITTED once stake left a node: master liquidated above, or (empty
+    # master) rot_master liquidated in step 3. Every exit after that returns True.
     rot_liquidated = False
     try:
         # ── Step 2: terminate cur_master (free rewards + clear record) ───────
-        _rdlog_step(f"[2/7] terminate cur_master prov[{cur_master_idx}]")
-        t_ok, _t_empty = _pool_tx_confirmed(R, "terminate", cur_master_addr,
-                                            register_tx_confirm, get_tx_confirm_result, wait_for_block)
-        if not t_ok:
-            _rdlog_warn("[2/7] terminate cur_master failed — rewards not freed; continuing")
+        if master_empty:
+            _rdlog_info("[2/7] terminate cur_master skipped (empty)")
+        else:
+            _rdlog_step(f"[2/7] terminate cur_master prov[{cur_master_idx}]")
+            t_ok, _t_empty = _pool_tx_confirmed(R, "terminate", cur_master_addr,
+                                                register_tx_confirm, get_tx_confirm_result, wait_for_block)
+            if not t_ok:
+                _rdlog_warn("[2/7] terminate cur_master failed — rewards not freed; continuing")
 
         # ── Step 3: liquidate rot_master (rot_active) → pool (frees excess) ──
         _rdlog_step(f"[3/7] liquidate rot_master prov[{rot_active_idx}] ({rot_stake:.0f} DUSK)")
@@ -598,6 +631,13 @@ def perform_consolidate(cur_epoch: int) -> bool:
                                            register_tx_confirm, get_tx_confirm_result, wait_for_block)
         rot_liquidated = r_ok and not r_empty
         if not rot_liquidated:
+            if master_empty:
+                # Nothing has left any node yet → clean pre-commit abort.
+                _rdlog_err(f"[3/7] rot_master liquidate {'empty' if r_empty else 'failed'} and "
+                           f"cur_master was empty — nothing moved, aborting (normal rotation will run)")
+                _notify_failed("rot_master liquidate failed with empty cur_master — aborted, nothing moved")
+                reset()
+                return False
             _rdlog_warn(f"[3/7] rot_master liquidate {'empty' if r_empty else 'failed'} — the "
                         f"excess stays in the rotation pair this cycle; still recovering master stake")
 
