@@ -357,6 +357,27 @@ def perform_preseed(cur_epoch: int) -> None:
                    f"< {SEED_DUSK:.0f} seed — cannot pre-seed, staying ARMED")
         return
 
+    # Pool guard — the seed is drawn from the pool and reverts on-chain when the
+    # pool holds less ("should not exceed the pending stake"). The rotation
+    # reserves it ([redistribute_preseed_reserve]); a user unstake served from
+    # the pool in between can still eat it. Defer instead of burning a tx.
+    try:
+        from .pool import _query_pool_balance_dusk
+        pool_dusk = _query_pool_balance_dusk(strict=True)
+    except Exception as _pe:
+        _rdlog_warn(f"perform_preseed: pool balance query failed ({_pe}) — sending the seed unchecked")
+        pool_dusk = None
+    if pool_dusk is not None and pool_dusk < SEED_DUSK:
+        msg = (f"pre-seed deferred: pool {pool_dusk:.4f} DUSK < {SEED_DUSK:.0f} seed — "
+               f"staying ARMED, retries next rotation window")
+        _rdlog_warn(msg)
+        with _rd_state_lock:
+            _rd_state["status_msg"] = msg
+        _save_state()
+        _tg("alert_info", f"⚠️ Redistribution pre-seed deferred: pool {pool_dusk:,.0f} DUSK "
+                          f"< {SEED_DUSK:.0f} DUSK seed. Still ARMED, retries next window.")
+        return
+
     _rdlog_step(f"pre-seed prov[{new_master_idx}] with {SEED_DUSK:.0f} DUSK → ta=2 "
                 f"(new master, cur master prov[{cur_master_idx}])")
     seed_evt = register_tx_confirm("stake_activate", addr)

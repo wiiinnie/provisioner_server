@@ -1578,12 +1578,28 @@ def _run_rotation(cur_epoch: int) -> None:
         # by (stake + locked) and we put that amount back. The terminate rewards
         # are NOT neutral — they were never in active_current, so re-staking them
         # grows it.
-        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - SEED_DUSK)
+        # [redistribute_preseed_reserve] When a redistribution is ARMED and its
+        # pre-seed will run after this rotation, that seed also comes out of the
+        # pool. Reserve a second SEED_DUSK here (pool AND capacity headroom) or
+        # the pre-seed reverts "should not exceed the pending stake" on a pool
+        # the rotation just emptied (mainnet epoch 2536, 2026-10-12).
+        _preseed_reserve = 0.0
+        try:
+            from .redistribute import wants_preseed as _rd_wants_preseed
+            if _rd_wants_preseed(cur_epoch):
+                _preseed_reserve = SEED_DUSK
+                _rlog_info(f"[3/4] redistribute pre-seed pending — reserving an extra "
+                           f"{SEED_DUSK:.0f} DUSK in the pool for it")
+        except Exception as _rd_err:
+            _rlog_warn(f"[3/4] redistribute pre-seed check error: {_rd_err} — no extra reserve")
+        pool_reserve = SEED_DUSK + _preseed_reserve
+
+        alloc_dusk = max(0.0, freed_by_liquidate + freed_by_terminate - pool_reserve)
         _rlog_step(f"[3/4] allocate freed stake → rot_slave prov[{rot_slave_idx}] (ta=1, no slash)")
         _rlog_info(
             f"[3/4] liquidate freed {freed_by_liquidate:.4f} DUSK + "
             f"terminate freed {freed_by_terminate:.4f} DUSK - "
-            f"seed {SEED_DUSK:.0f} DUSK"
+            f"reserve {pool_reserve:.0f} DUSK"
             f" = {alloc_dusk:.4f} DUSK to allocate")
 
         # [seed_capacity_reserve] At the cap, the re-staked rewards eat the headroom
@@ -1595,13 +1611,13 @@ def _run_rotation(cur_epoch: int) -> None:
             from .assess import _fetch_capacity_cached
             _cap = _fetch_capacity_cached(_pw(), force=True)
             if _cap.get("active_maximum", 0.0) > 0:
-                _reserve  = SEED_DUSK + 0.001   # float slack, cap is DUSK floats
+                _reserve  = pool_reserve + 0.001   # float slack, cap is DUSK floats
                 _headroom = _cap["active_maximum"] - _cap.get("active_current", 0.0)
                 _fits     = max(0.0, _headroom - _reserve, freed_by_liquidate - _reserve)
                 if alloc_dusk > _fits:
                     _rlog_warn(f"[3/4] capacity headroom {_headroom:.4f} DUSK — allocating {_fits:.4f} "
-                               f"instead of {alloc_dusk:.4f} to keep {SEED_DUSK:.0f} DUSK free for the "
-                               f"re-seed; {alloc_dusk - _fits:.4f} DUSK stays in pool")
+                               f"instead of {alloc_dusk:.4f} to keep {pool_reserve:.0f} DUSK free for the "
+                               f"seed(s); {alloc_dusk - _fits:.4f} DUSK stays in pool")
                     alloc_dusk = _fits
         except Exception as _cap_err:
             _rlog_warn(f"[3/4] capacity check error: {_cap_err} — allocating unclamped")
@@ -1614,7 +1630,7 @@ def _run_rotation(cur_epoch: int) -> None:
         # the seed reverts "should not exceed the pending stake".
         from .pool import clamp_to_pool_balance
         alloc_dusk = clamp_to_pool_balance(alloc_dusk, f"[3/4] alloc[prov{rot_slave_idx}]",
-                                           reserve_dusk=SEED_DUSK)
+                                           reserve_dusk=pool_reserve)
         if alloc_dusk < 10.0:
             _rlog_warn(f"[3/4] only {alloc_dusk:.2f} DUSK to allocate — nothing sent to rot_slave")
         else:
