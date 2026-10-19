@@ -105,9 +105,12 @@ def _now_ts() -> str:
 
 
 def _own_addresses() -> set:
+    # [six_nodes] every configured provisioner, not a fixed 0..3 — otherwise
+    # txs of the static masters count as a competitor's.
+    from .config import NODE_INDICES
     addrs = set()
-    for k in ("prov_0_address", "prov_1_address", "prov_2_address", "prov_3_address"):
-        v = cfg(k)
+    for i in NODE_INDICES:
+        v = cfg(f"prov_{i}_address")
         if v:
             addrs.add(v)
     return addrs

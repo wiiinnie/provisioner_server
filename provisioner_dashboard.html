@@ -1097,9 +1097,20 @@
     <div class="modal-title">Redistribute Stake</div>
     <div class="modal-body" style="margin-bottom:12px;">
       Consolidate-and-hop: pin rot_master to a target and move the excess (plus
-      the current master's stake) onto the other master-pair node — no 10% slash.
-      Runs across two rotation windows. The master is only liquidated once its
-      replacement is confirmed maturing (ta==1).
+      the current master's stake) onto the landing nodes — no 10% slash.
+      Runs across two rotation windows: the landing nodes are pre-seeded (1k each,
+      one batch) in the first, and the master is only liquidated in the second once
+      every landing node is confirmed maturing (ta==1). Liquidates, terminates and
+      activates each go out as one wallet batch.
+    </div>
+
+    <!-- [six_nodes] landing nodes + shares -->
+    <label style="font-size:11px;color:var(--muted);">Landing nodes &amp; shares (%)<br>
+      <span style="font-size:10px;color:var(--dim)">the master-pair standby is always included (the master hops there); tick static masters to split the stake — that is how empty extra masters get their stake (bootstrap)</span>
+    </label>
+    <div id="rd-landing" style="display:flex;flex-direction:column;gap:4px;margin:4px 0 6px 0;font-size:11px;"></div>
+    <div style="margin-bottom:10px;">
+      <button class="mbtn mbtn-cancel" style="font-size:10px;padding:2px 8px;" onclick="rdEqualShares()">equal shares</button>
     </div>
 
     <label style="font-size:11px;color:var(--muted);">Target rot_master (DUSK)<br>
@@ -1225,6 +1236,55 @@ function _deriveNodeIndices(cfg) {
   }
   indices.sort((a, b) => a - b)
   return indices.length ? indices : [0, 1, 2, 3]
+}
+
+// [six_nodes] fleet conventions (mirror lib/config.py)
+function _defaultWsPort(i)  { return i === 0 ? 8080 : (81 + i) * 101 }   // 8080, 8282, 8383, 8484, 8585, 8686
+function _defaultNodeLog(i) { return `/var/log/rusk-${i + 1}.log` }
+
+// Indices the config modal shows: the node-count field (may exceed what the
+// backend has keys for until it is restarted) or the keys already present.
+function _cfgNodeIndices() {
+  const n = parseInt(document.getElementById('cfg-node-count')?.value) || 0
+  const derived = _deriveNodeIndices(_cfg)
+  const count = Math.max(4, Math.min(8, n || derived.length))
+  return Array.from({length: count}, (_, i) => i)
+}
+
+function _renderCfgNodeFields() {
+  const host = document.getElementById('cfg-node-fields')
+  if (!host) return
+  const keep = {}
+  for (const el of host.querySelectorAll('input')) keep[el.id] = el.value
+  const roleOf = i => i <= 1 ? 'master pair' : i <= 3 ? 'rotation pair' : 'static master'
+  let html = ''
+  for (const i of _cfgNodeIndices()) {
+    html += `
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:4px;color:var(--dim);">Node ${i} · ${roleOf(i)} · rusk-${i + 1}</label>
+      <label style="font-size:11px;color:var(--muted);">Node ${i} Log<br><span style="font-size:10px;color:var(--dim)">${_defaultNodeLog(i)}</span></label>
+      <input class="modal-input" id="cfg-node${i}-log" type="text" style="margin:0;" placeholder="${_defaultNodeLog(i)}">
+      <label style="font-size:11px;color:var(--muted);">Node ${i} WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
+      <input class="modal-input" id="cfg-node${i}-ws-port" type="number" style="margin:0;" placeholder="${_defaultWsPort(i)}">
+      <label style="font-size:11px;color:var(--muted);">Prov ${i} Address</label>
+      <input class="modal-input" id="cfg-prov-${i}-address" type="text" style="margin:0;" placeholder="BLS key…">`
+  }
+  host.innerHTML = html
+  for (const el of host.querySelectorAll('input')) {
+    if (el.id in keep) el.value = keep[el.id]
+    else if (el.id.endsWith('-log')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`node_${i}_log`] || _defaultNodeLog(i) }
+    else if (el.id.endsWith('-ws-port')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`node_${i}_ws_port`] ?? _defaultWsPort(i) }
+    else if (el.id.endsWith('-address')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`prov_${i}_address`] || '' }
+  }
+}
+
+function _cfgNodePayload() {
+  const out = {}
+  for (const i of _cfgNodeIndices()) {
+    out[`node_${i}_log`]     = document.getElementById(`cfg-node${i}-log`)?.value.trim() || _defaultNodeLog(i)
+    out[`node_${i}_ws_port`] = parseInt(document.getElementById(`cfg-node${i}-ws-port`)?.value) || _defaultWsPort(i)
+    out[`prov_${i}_address`] = document.getElementById(`cfg-prov-${i}-address`)?.value.trim() || ''
+  }
+  return out
 }
 
 // ── COLLAPSIBLE CARDS ────────────────────────────────────────────────────────
@@ -1595,10 +1655,62 @@ function closeModal(id)      { document.getElementById(id).classList.remove('ope
 
 // [redistribute_ui] manual redistribution UI
 let _rdArmed = false
+// [six_nodes] landing selection: {idx: pct}; hop node is always present
+let _rdLanding = {}
+let _rdCandidates = []
 async function openRedistribute() {
   openModal('modal-redistribute')
   await rdRefreshState()
   await rdPreview()
+}
+
+function _rdLandingQuery() {
+  const idxs = Object.keys(_rdLanding).map(Number).sort((a, b) => a - b)
+  if (!idxs.length) return ''
+  return `&landing=${idxs.join(',')}&shares=${idxs.map(i => _rdLanding[i]).join(',')}`
+}
+
+function _rdRenderLanding() {
+  const host = document.getElementById('rd-landing')
+  if (!host) return
+  if (!_rdCandidates.length) { host.innerHTML = '<span style="color:var(--dim)">no landing candidates (is the master pair configured?)</span>'; return }
+  let html = ''
+  for (const c of _rdCandidates) {
+    const on   = c.idx in _rdLanding
+    const hop  = c.kind === 'hop'
+    const free = c.status === 'inactive'
+    const state = free ? 'inactive — ready' : `${c.status}${c.ta != null ? ' ta=' + c.ta : ''} — NOT free`
+    html += `<div style="display:flex;align-items:center;gap:8px;">
+      <input type="checkbox" id="rd-land-${c.idx}" ${on ? 'checked' : ''} ${hop ? 'checked disabled' : ''} onchange="rdToggleLanding(${c.idx})">
+      <span style="min-width:150px;font-family:'IBM Plex Mono',monospace;">prov[${c.idx}] ${hop ? 'standby (hop)' : 'static master'}</span>
+      <input type="number" id="rd-share-${c.idx}" min="0.1" max="100" step="0.1" value="${on ? (+_rdLanding[c.idx]).toFixed(1) : ''}" ${on ? '' : 'disabled'}
+             style="width:64px;font-size:11px;padding:1px 4px;" oninput="rdShareInput(${c.idx})"> %
+      <span style="color:${free ? 'var(--dim)' : 'var(--yellow)'};">${state}${c.stake > 0 ? ' · ' + _rdFmt(c.stake) + ' DUSK' : ''}</span>
+    </div>`
+  }
+  host.innerHTML = html
+}
+
+function rdToggleLanding(idx) {
+  const cb = document.getElementById(`rd-land-${idx}`)
+  if (cb && cb.checked) _rdLanding[idx] = 0
+  else delete _rdLanding[idx]
+  rdEqualShares()
+}
+
+function rdShareInput(idx) {
+  const v = parseFloat(document.getElementById(`rd-share-${idx}`)?.value)
+  if (!isNaN(v)) _rdLanding[idx] = v
+  rdPreview(true)
+}
+
+function rdEqualShares() {
+  const idxs = Object.keys(_rdLanding).map(Number)
+  if (!idxs.length) return
+  const eq = Math.round(10000 / idxs.length) / 100
+  for (const i of idxs) _rdLanding[i] = eq
+  _rdRenderLanding()
+  rdPreview(true)
 }
 
 function _rdFmt(n) {
@@ -1633,27 +1745,42 @@ async function rdRefreshState() {
   }
 }
 
-async function rdPreview() {
+async function rdPreview(keepLanding = false) {
   const el = document.getElementById('rd-preview')
   const target = parseFloat(document.getElementById('rd-target').value || '1000000')
   el.textContent = 'loading preview…'
   try {
-    const r = await fetch(`${API}/api/redistribute/preview?target=${encodeURIComponent(target)}`)
+    const q = keepLanding ? _rdLandingQuery() : ''
+    const r = await fetch(`${API}/api/redistribute/preview?target=${encodeURIComponent(target)}${q}`)
     const d = await r.json()
     if (!d.ok) { el.textContent = 'preview error: ' + (d.error || 'unknown'); el.style.color = 'var(--red)'; return }
-    const warn = d.new_master_inactive
-      ? ''
-      : `\n⚠ landing zone prov[${d.new_master_idx}] is NOT inactive — pre-seed will defer until it is free`
+    // [six_nodes] sync the landing selection with what the backend resolved
+    _rdCandidates = d.candidates || []
+    if (!keepLanding || d.landing_error) {
+      _rdLanding = {}
+      for (const i of (d.landing || [])) _rdLanding[i] = +(d.shares?.[String(i)] ?? 0)
+      _rdRenderLanding()
+    }
+    const per = d.per_node || {}
+    const landingLines = (d.landing || []).map(i => {
+      const n = per[String(i)] || {}
+      const role = i === d.new_master_idx ? 'new master   ' : 'static master'
+      const free = n.status === 'inactive' ? 'inactive — ready' : `${n.status || '?'} — NOT free`
+      return `${role} prov[${i}]   ${(+n.pct || 0).toFixed(1).padStart(5)}%  →  +${_rdFmt(n.topup)} DUSK   (${free})`
+    }).join('\n')
+    const warns = []
+    if (d.landing_error) warns.push(`⚠ landing selection rejected: ${d.landing_error} (showing the default)`)
+    if (!d.landing_all_inactive) warns.push('⚠ a landing node is NOT inactive — pre-seed will defer until it is free')
     el.style.color = 'var(--muted)'
     el.textContent =
-      `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} + ${_rdFmt(d.master_locked || 0)} locked DUSK  (moves to new master)\n` +
-      `new master   prov[${d.new_master_idx}]   ${d.new_master_inactive ? 'inactive — ready' : 'NOT free'}\n` +
+      `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} + ${_rdFmt(d.master_locked || 0)} locked DUSK  (liquidated, moves to the landing nodes)\n` +
       `rot_active   prov[${d.rot_active_idx}]   ${_rdFmt(d.rot_stake)} + ${_rdFmt(d.rot_locked || 0)} locked DUSK\n` +
       `\n` +
       `target       ${_rdFmt(d.target)} DUSK\n` +
       `excess       ${_rdFmt(d.excess)} DUSK  (rot stake + locked − target)\n` +
-      `→ new master ends at ~${_rdFmt(d.new_master_size)} DUSK (excess + master stake + locked), active in 2 epochs` +
-      warn
+      `moved        ${_rdFmt(d.new_master_size)} DUSK  (excess + master stake + locked), active in 2 epochs\n` +
+      `\n` + landingLines +
+      (warns.length ? '\n\n' + warns.join('\n') : '')
   } catch (e) {
     el.textContent = 'preview fetch failed: ' + e
     el.style.color = 'var(--red)'
@@ -1664,16 +1791,20 @@ async function rdArm() {
   if (_rdArmed) return
   const target = parseFloat(document.getElementById('rd-target').value || '1000000')
   const statusEl = document.getElementById('rd-status')
+  const idxs = Object.keys(_rdLanding).map(Number).sort((a, b) => a - b)
+  const shares = idxs.map(i => _rdLanding[i])
+  const landingStr = idxs.map((i, k) => `prov[${i}] ${(+shares[k]).toFixed(1)}%`).join(', ')
   if (!confirm(`Arm redistribution with rot_master target ${_rdFmt(target)} DUSK?\n\n` +
+               `Landing: ${landingStr}\n\n` +
                `This runs across the next two rotation windows and will liquidate the ` +
-               `current master (only after its replacement is confirmed maturing).`)) return
+               `current master (only after every landing node is confirmed maturing).`)) return
   statusEl.textContent = 'arming…'
   statusEl.style.color = 'var(--dim)'
   try {
     const r = await fetch(`${API}/api/redistribute/arm`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({target_dusk: target})
+      body: JSON.stringify({target_dusk: target, landing: idxs, shares: shares})
     })
     const d = await r.json()
     if (d.ok) {
@@ -2083,16 +2214,13 @@ async function loadConfig() {
     document.getElementById('cfg-contract').value     = _cfg.contract_address ?? ''
     document.getElementById('cfg-stake-contract').value = _cfg.stake_contract_id ?? ''  // [slash_events]
     document.getElementById('cfg-operator').value     = _cfg.operator_address ?? ''
-    // Node log paths
-    if (document.getElementById('cfg-node0-log')) {
-      document.getElementById('cfg-node0-log').value = _cfg.node_0_log || '/var/log/rusk-1.log'
-      document.getElementById('cfg-node1-log').value = _cfg.node_1_log || '/var/log/rusk-2.log'
-      document.getElementById('cfg-node2-log').value = _cfg.node_2_log || '/var/log/rusk-3.log'
-      document.getElementById('cfg-node0-ws-port').value = _cfg.node_0_ws_port ?? 8080
-      document.getElementById('cfg-node1-ws-port').value = _cfg.node_1_ws_port ?? 8282
-      document.getElementById('cfg-node2-ws-port').value = _cfg.node_2_ws_port ?? 8383
-    document.getElementById('cfg-node3-log').value = _cfg.node_3_log || '/var/log/rusk-4.log'
-    document.getElementById('cfg-node3-ws-port').value = _cfg.node_3_ws_port ?? 8484
+    // [six_nodes] per-node fields (log, ws port, address) for every configured index
+    document.getElementById('cfg-node-count').value = _cfg.node_count ?? _deriveNodeIndices(_cfg).length
+    _renderCfgNodeFields()
+    for (const i of _cfgNodeIndices()) {
+      document.getElementById(`cfg-node${i}-log`).value     = _cfg[`node_${i}_log`] || _defaultNodeLog(i)
+      document.getElementById(`cfg-node${i}-ws-port`).value = _cfg[`node_${i}_ws_port`] ?? _defaultWsPort(i)
+      document.getElementById(`cfg-prov-${i}-address`).value = _cfg[`prov_${i}_address`] || ''
     }
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11
@@ -2129,11 +2257,7 @@ async function loadConfig() {
       const _el = document.getElementById(`cfg-notif-${_k}`)
       if (_el) _el.checked = _notif[_k] !== false   // default true if missing
     }
-    // Rotation config fields
-    document.getElementById('cfg-prov-0-address').value = _cfg.prov_0_address || ''
-    document.getElementById('cfg-prov-1-address').value = _cfg.prov_1_address || ''
-    document.getElementById('cfg-prov-2-address').value = _cfg.prov_2_address || ''
-    document.getElementById('cfg-prov-3-address').value = _cfg.prov_3_address || ''
+    // (provisioner addresses are populated with the per-node fields above)
     // Show addresses from config immediately as fallback, then try auto-detect from wallet
     const _fmt = a => a ? a.slice(0,12)+'…'+a.slice(-6) : '—'
     // Auto-detect from wallet — updates display if wallet returns addresses
@@ -2151,22 +2275,12 @@ async function saveConfig() {
     contract_address:     document.getElementById('cfg-contract').value.trim(),
     stake_contract_id:    document.getElementById('cfg-stake-contract').value.trim(),  // [slash_events]
     operator_address:     document.getElementById('cfg-operator').value.trim(),
-    node_0_log:           document.getElementById('cfg-node0-log')?.value.trim() || '/var/log/rusk-1.log',
-    node_1_log:           document.getElementById('cfg-node1-log')?.value.trim() || '/var/log/rusk-2.log',
-    node_2_log:           document.getElementById('cfg-node2-log')?.value.trim() || '/var/log/rusk-3.log',
-    node_0_ws_port:       parseInt(document.getElementById('cfg-node0-ws-port')?.value) || 8080,
-    node_1_ws_port:       parseInt(document.getElementById('cfg-node1-ws-port')?.value) || 8282,
-    node_2_ws_port:       parseInt(document.getElementById('cfg-node2-ws-port')?.value) || 8383,
-    node_3_log:           document.getElementById('cfg-node3-log')?.value?.trim() || '/var/log/rusk-4.log',
-    node_3_ws_port:       parseInt(document.getElementById('cfg-node3-ws-port')?.value) || 8484,
+    node_count:           parseInt(document.getElementById('cfg-node-count').value) || 4,   // [six_nodes]
+    ..._cfgNodePayload(),
     rotation_window:      parseInt(document.getElementById('cfg-rotation').value),
     snatch_window:        parseInt(document.getElementById('cfg-snatch').value),
     backfill_blocks:      parseInt(document.getElementById('cfg-backfill').value),
     node_state_url:       document.getElementById('cfg-node-state-url').value.trim(),
-    prov_0_address:        document.getElementById('cfg-prov-0-address').value.trim(),
-    prov_1_address:        document.getElementById('cfg-prov-1-address').value.trim(),
-    prov_2_address:        document.getElementById('cfg-prov-2-address').value.trim(),
-    prov_3_address:        document.getElementById('cfg-prov-3-address').value.trim(),
     master_alert_threshold_pct: parseFloat(document.getElementById('cfg-master-alert-threshold-pct').value || '70'),
     rotation_floor_pct:       parseFloat(document.getElementById('cfg-rotation-floor-pct').value || '20'),
       locked_max_pct: parseFloat(document.getElementById('cfg-locked-max-pct').value) || 2.0,
@@ -3108,9 +3222,10 @@ function _virtualKey(topic, dec) {
 }
 
 function _ownAddrs() {
+  // [six_nodes] operator + every configured prov_N_address
   if (!_cfg) return []
-  return [_cfg.operator_address,_cfg.prov_0_address,
-          _cfg.prov_1_address,_cfg.prov_2_address,_cfg.prov_3_address].filter(Boolean)
+  const provs = Object.keys(_cfg).filter(k => /^prov_\d+_address$/.test(k)).map(k => _cfg[k])
+  return [_cfg.operator_address, ...provs].filter(Boolean)
 }
 
 function _containsOwnAddr(text) {
@@ -3302,10 +3417,7 @@ async function _pollRues() {
           )
           // Highlight own addresses
           if (_cfg) {
-            const ownAddrs = [
-              _cfg.operator_address, _cfg.prov_0_address,
-              _cfg.prov_1_address,   _cfg.prov_2_address,   _cfg.prov_3_address,
-            ].filter(Boolean)
+            const ownAddrs = _ownAddrs()   // [six_nodes]
             for (const addr of ownAddrs) {
               const esc = addr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
               textPart = textPart.replace(
@@ -3474,7 +3586,7 @@ async function _pollRues() {
               let detailHtml = parts.join(sep)
               // Highlight own addresses in the detail line
               if (_cfg) {
-                const ownAddrs = [_cfg.operator_address,_cfg.prov_0_address,_cfg.prov_1_address,_cfg.prov_2_address,_cfg.prov_3_address].filter(Boolean)
+                const ownAddrs = _ownAddrs()   // [six_nodes]
                 for (const addr of ownAddrs) {
                   const esc = addr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
                   detailHtml = detailHtml.replace(new RegExp(esc,'g'),
@@ -4013,43 +4125,11 @@ setInterval(() => {
       <label style="font-size:11px;color:var(--muted);">Node State URL<br><span style="font-size:10px;color:var(--dim)">override default (e.g. http://localhost:8080) — restart required</span></label>
       <input class="modal-input" id="cfg-node-state-url" type="text" style="margin:0;" placeholder="leave blank for network default">
 
-      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Node Log Paths &amp; WebSocket Ports</label>
-      <label style="font-size:11px;color:var(--muted);">Node 0 Log<br><span style="font-size:10px;color:var(--dim)">/var/log/rusk-1.log</span></label>
-      <input class="modal-input" id="cfg-node0-log" type="text" style="margin:0;" placeholder="/var/log/rusk-1.log">
-
-      <label style="font-size:11px;color:var(--muted);">Node 0 WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
-      <input class="modal-input" id="cfg-node0-ws-port" type="number" style="margin:0;" placeholder="8080">
-
-      <label style="font-size:11px;color:var(--muted);">Node 1 Log<br><span style="font-size:10px;color:var(--dim)">/var/log/rusk-2.log</span></label>
-      <input class="modal-input" id="cfg-node1-log" type="text" style="margin:0;" placeholder="/var/log/rusk-2.log">
-
-      <label style="font-size:11px;color:var(--muted);">Node 1 WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
-      <input class="modal-input" id="cfg-node1-ws-port" type="number" style="margin:0;" placeholder="8282">
-
-      <label style="font-size:11px;color:var(--muted);">Node 2 Log<br><span style="font-size:10px;color:var(--dim)">/var/log/rusk-3.log</span></label>
-      <input class="modal-input" id="cfg-node2-log" type="text" style="margin:0;" placeholder="/var/log/rusk-3.log">
-
-      <label style="font-size:11px;color:var(--muted);">Node 2 WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
-      <input class="modal-input" id="cfg-node2-ws-port" type="number" style="margin:0;" placeholder="8383">
-
-      <label style="font-size:11px;color:var(--muted);">Node 3 Log<br><span style="font-size:10px;color:var(--dim)">/var/log/rusk-4.log</span></label>
-      <input class="modal-input" id="cfg-node3-log" type="text" style="margin:0;" placeholder="/var/log/rusk-4.log">
-
-      <label style="font-size:11px;color:var(--muted);">Node 3 WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
-      <input class="modal-input" id="cfg-node3-ws-port" type="number" style="margin:0;" placeholder="8484">
-
-      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Rotation</label>
-      <label style="font-size:11px;color:var(--muted);">Prov 0 Address</label>
-      <input class="modal-input" id="cfg-prov-0-address" type="text" style="margin:0;" placeholder="BLS key…">
-
-      <label style="font-size:11px;color:var(--muted);">Prov 1 Address</label>
-      <input class="modal-input" id="cfg-prov-1-address" type="text" style="margin:0;" placeholder="BLS key…">
-
-      <label style="font-size:11px;color:var(--muted);">Prov 2 Address</label>
-      <input class="modal-input" id="cfg-prov-2-address" type="text" style="margin:0;" placeholder="BLS key…">
-
-      <label style="font-size:11px;color:var(--muted);">Prov 3 Address</label>
-      <input class="modal-input" id="cfg-prov-3-address" type="text" style="margin:0;" placeholder="BLS key…">
+      <label style="font-size:11px;color:var(--muted);grid-column:1/-1;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;color:var(--cyan);">Nodes</label>
+      <!-- [six_nodes] per-node fields are rendered by _renderCfgNodeFields() -->
+      <label style="font-size:11px;color:var(--muted);">Node Count<br><span style="font-size:10px;color:var(--dim)">provisioner instances 4–8 (0/1 master pair, 2/3 rotation pair, 4+ static masters) — restart required</span></label>
+      <input class="modal-input" id="cfg-node-count" type="number" min="4" max="8" style="margin:0;" placeholder="4" oninput="_renderCfgNodeFields()">
+      <div id="cfg-node-fields" style="display:contents;"></div>
 
 
 

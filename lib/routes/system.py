@@ -71,31 +71,66 @@ def redistribute_status():
         return jsonify({"ok": False, "error": str(e)})
 
 
+def _parse_landing_args(args) -> tuple:
+    """[six_nodes] ?landing=1,4,5&shares=34,33,33 → ([1,4,5], [34,33,33]) or ([], None)."""
+    landing_s = (args.get("landing") or "").strip()
+    shares_s  = (args.get("shares") or "").strip()
+    landing = [int(x) for x in landing_s.split(",") if x.strip()] if landing_s else []
+    shares  = [float(x) for x in shares_s.split(",") if x.strip()] if shares_s else None
+    return landing, shares
+
+
 @bp.route("/api/redistribute/preview")
 def redistribute_preview():
     """Preview what a redistribution with the given target would move, using
-    current on-chain state. Query param: ?target=<dusk> (default 1,000,000)."""
+    current on-chain state. Query params: ?target=<dusk> (default 1,000,000),
+    [six_nodes] &landing=<idx,idx,…> &shares=<pct,pct,…> (default: the
+    master-pair standby at 100%)."""
     try:
-        from ..redistribute import _preview_amounts, DEFAULT_TARGET_DUSK
+        from ..redistribute import (_preview_amounts, DEFAULT_TARGET_DUSK, validate_landing,
+                                    _landing_shares)
         from ..rotation import _assess, _master_idx, ROTATION_PAIR
+        from ..config import MASTER_PAIR, EXTRA_MASTERS
         target = float(request.args.get("target", DEFAULT_TARGET_DUSK))
+        landing_req, shares_req = _parse_landing_args(request.args)
         st    = _assess()
         nodes = st.get("by_idx", {})
         cur_master_idx = _master_idx()
-        new_master_idx = next((i for i in (0, 1) if i != cur_master_idx), None)
         rot_active_idx = next((i for i in ROTATION_PAIR
                                if nodes.get(i, {}).get("status") == "active"
                                and nodes.get(i, {}).get("ta") == 0), None)
         if rot_active_idx is None:
             return jsonify({"ok": False, "error": "no active rot_master found"})
-        pv = _preview_amounts(nodes, target, rot_active_idx, cur_master_idx)
+        landing_err = ""
+        try:
+            landing, new_master_idx = validate_landing(landing_req, cur_master_idx)
+            shares = _landing_shares(landing, shares_req)
+        except ValueError as ve:
+            landing_err = str(ve)
+            landing, new_master_idx = validate_landing(None, cur_master_idx)
+            shares = _landing_shares(landing, None)
+        pv = _preview_amounts(nodes, target, rot_active_idx, cur_master_idx, landing, shares)
+        # every node an operator may pick as a landing zone, with its current state
+        candidates = []
+        for i in list(MASTER_PAIR) + list(EXTRA_MASTERS):
+            if i == cur_master_idx:
+                continue
+            n = nodes.get(i, {})
+            candidates.append({"idx": i, "kind": "hop" if i in MASTER_PAIR else "static",
+                               "status": n.get("status"), "ta": n.get("ta"),
+                               "stake": n.get("stake_dusk", 0.0)})
         return jsonify({
             "ok": True,
             "target": target,
             "cur_master_idx": cur_master_idx,
             "new_master_idx": new_master_idx,
             "rot_active_idx": rot_active_idx,
+            "landing": landing,
+            "shares": {str(k): v for k, v in shares.items()},
+            "landing_error": landing_err,
+            "candidates": candidates,
             "new_master_inactive": nodes.get(new_master_idx, {}).get("status") == "inactive",
+            "landing_all_inactive": all(nodes.get(i, {}).get("status") == "inactive" for i in landing),
             **pv,
         })
     except Exception as e:
@@ -107,8 +142,10 @@ def redistribute_arm():
     try:
         from ..redistribute import arm
         data = request.get_json(silent=True) or {}
-        target = data.get("target_dusk")
-        return jsonify(arm(target))
+        target  = data.get("target_dusk")
+        landing = data.get("landing") or None          # [six_nodes]
+        shares  = data.get("shares") or None
+        return jsonify(arm(target, landing, shares))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -186,20 +223,29 @@ def set_config():
     from ..config import _cfg as _current_cfg
     data    = request.get_json() or {}
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
+    from ..config import MAX_NODE_COUNT, MIN_NODE_COUNT
+    # [six_nodes] per-node keys for every index the config may ever hold
+    _node_port_keys = tuple(f"node_{i}_ws_port" for i in range(MAX_NODE_COUNT))
+    _node_log_keys  = tuple(f"node_{i}_log"     for i in range(MAX_NODE_COUNT))
+    _prov_addr_keys = tuple(f"prov_{i}_address" for i in range(MAX_NODE_COUNT))
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
-                  "master_idx","gas_limit","gas_price","node_0_ws_port","node_1_ws_port","node_2_ws_port","node_3_ws_port",
+                  "master_idx","gas_limit","gas_price","node_count",) + _node_port_keys + (
                   "sweeper_delay_blocks",
                   "rues_log_retention_hours")  # [config_whitelist_fix] [log24h]
     bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause] [config_whitelist_fix]
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct",
                   "master_alert_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
-    str_keys   = ("contract_address","stake_contract_id","operator_address",
-                  "prov_0_address","prov_1_address","prov_2_address","prov_3_address",
-                  "node_0_log","node_1_log","node_2_log","node_3_log",
+    str_keys   = ("contract_address","stake_contract_id","operator_address",) + _prov_addr_keys + _node_log_keys + (
                   "telegram_bot_token","telegram_chat_id","node_state_url")
     for k in int_keys:
         if k in data:
             current[k] = max(100000,int(data[k])) if k=="gas_limit" else int(data[k])
+    # [six_nodes] node_count bounds; a change takes effect after restart
+    if "node_count" in current:
+        v = int(current["node_count"])
+        if v < MIN_NODE_COUNT or v > MAX_NODE_COUNT:
+            return jsonify({"ok": False,
+                            "error": f"node_count must be between {MIN_NODE_COUNT} and {MAX_NODE_COUNT} (got {v})"}), 400
     for k in float_keys:
         if k in data: current[k] = float(data[k])
 

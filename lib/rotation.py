@@ -1583,13 +1583,14 @@ def _run_rotation(cur_epoch: int) -> None:
         # pool. Reserve a second SEED_DUSK here (pool AND capacity headroom) or
         # the pre-seed reverts "should not exceed the pending stake" on a pool
         # the rotation just emptied (mainnet epoch 2536, 2026-10-12).
+        # [six_nodes] one SEED_DUSK per landing node (the bootstrap seeds several).
         _preseed_reserve = 0.0
         try:
-            from .redistribute import wants_preseed as _rd_wants_preseed
-            if _rd_wants_preseed(cur_epoch):
-                _preseed_reserve = SEED_DUSK
+            from .redistribute import preseed_reserve_dusk as _rd_preseed_reserve
+            _preseed_reserve = float(_rd_preseed_reserve(cur_epoch) or 0.0)
+            if _preseed_reserve > 0:
                 _rlog_info(f"[3/4] redistribute pre-seed pending — reserving an extra "
-                           f"{SEED_DUSK:.0f} DUSK in the pool for it")
+                           f"{_preseed_reserve:.0f} DUSK in the pool for it")
         except Exception as _rd_err:
             _rlog_warn(f"[3/4] redistribute pre-seed check error: {_rd_err} — no extra reserve")
         pool_reserve = SEED_DUSK + _preseed_reserve
@@ -1724,7 +1725,7 @@ def _run_rotation(cur_epoch: int) -> None:
         try:
             from .redistribute import wants_preseed, perform_preseed
             if wants_preseed(cur_epoch):
-                _rlog_step("redistribute: pre-seeding new master after rotation")
+                _rlog_step("redistribute: pre-seeding the landing node(s) after rotation")
                 perform_preseed(cur_epoch)
         except Exception as _rd_err:
             _rlog_warn(f"redistribute preseed hook error: {_rd_err}")
@@ -1754,7 +1755,7 @@ def _run_rotation(cur_epoch: int) -> None:
         # [notification_rework] send rotation success summary to telegram
         try:
             from .telegram import alert_rotation_success
-            from .config   import NODE_INDICES, MASTER_PAIR
+            from .config   import NODE_INDICES, MASTER_PAIR, EXTRA_MASTERS
             st = _assess()
             nodes = st.get("by_idx", {})
             master_idx = _master_idx()
@@ -1778,6 +1779,8 @@ def _run_rotation(cur_epoch: int) -> None:
                     _role = "master"
                 elif _n_idx in MASTER_PAIR:
                     _role = "standby"
+                elif _n_idx in EXTRA_MASTERS:
+                    _role = "master (static)"   # [six_nodes]
                 elif _n_idx in rot_idx_list:
                     if _ta == 0:
                         _role = "rot_active"

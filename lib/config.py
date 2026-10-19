@@ -44,7 +44,12 @@ OPERATOR_WALLET = os.path.expanduser("~/sozu_operator")
 NETWORK         = os.environ.get("SOZU_NETWORK", "testnet")   # override via SOZU_NETWORK env var
 _NET            = f"-n {NETWORK}"
 RUSK_VERSION    = "1.5"
+# [six_nodes] NODE_INDICES is derived from the `node_count` config key once the
+# dashboard config is loaded (see the bottom of this module). Default 4; a
+# change needs a process restart because every module imports the list once.
 NODE_INDICES    = [0, 1, 2, 3]
+MIN_NODE_COUNT  = 4
+MAX_NODE_COUNT  = 8
 
 # ── Architecture invariant: provisioner role split ───────────────────────
 # prov[0] and prov[1] are the master pair (redistribute-managed only).
@@ -52,9 +57,25 @@ NODE_INDICES    = [0, 1, 2, 3]
 # These sets are disjoint and constant. Redistribute owns MASTER_PAIR,
 # rotation and deposit-race code owns ROTATION_PAIR. Mixing them produces
 # the kind of standby-leakage bug fixed in this branch.
+# [six_nodes] Every index beyond the two pairs (4, 5, …) is a STATIC master:
+# it holds a share of the master stake, is never rotated, and is only ever
+# (re)filled as a redistribute landing node. Unstakes front the operator's
+# provisioners in ascending index order, so these sit behind the master pair
+# and the rotation pair and are never nibbled while prov[0] holds stake.
 MASTER_PAIR     = (0, 1)
 ROTATION_PAIR   = (2, 3)
+EXTRA_MASTERS   = []      # filled from NODE_INDICES after config load
 PORT            = 7373
+
+
+def _default_ws_port(idx: int) -> int:
+    """Local rusk websocket port of instance idx+1. The fleet convention is
+    8080 for the first instance, then 8282 / 8383 / 8484 / 8585 / 8686."""
+    return 8080 if idx == 0 else (81 + idx) * 101
+
+
+def _default_log_path(idx: int) -> str:
+    return f"/var/log/rusk-{idx + 1}.log"
 
 # ── sozu-wallet config.toml reader ────────────────────────────────────────────
 _SOZU_WALLET_CONFIG_TOML = os.path.expanduser("~/.config/sozu-wallet/config.toml")
@@ -140,6 +161,10 @@ _CONFIG_DEFAULTS = {
     # about once a day, so the default has to span more than one.
     "rues_log_retention_hours": 24,
     "operator_address":        "",
+    # [six_nodes] number of provisioner instances (4..8). prov_N_address,
+    # node_N_log and node_N_ws_port defaults are generated per index in
+    # _load_config(); restart required after a change.
+    "node_count":              4,
     "prov_0_address":          "",
     "prov_1_address":          "",
     "prov_2_address":          "",
@@ -195,8 +220,23 @@ def _load_config() -> dict:
     if merged.get("backfill_blocks", 200) == 50:   merged["backfill_blocks"] = 200
     if merged.get("rotation_window") == 100:        merged["rotation_window"] = 41
     if merged.get("snatch_window")   == 50:         merged["snatch_window"]   = 11
+    # [six_nodes] per-node keys for every configured index. The dashboard
+    # derives its node list from the prov_N_address keys present here, so
+    # only indices < node_count get keys.
+    for i in range(_node_count_of(merged)):
+        merged.setdefault(f"prov_{i}_address", "")
+        merged.setdefault(f"node_{i}_log",     _default_log_path(i))
+        merged.setdefault(f"node_{i}_ws_port", _default_ws_port(i))
     _cfg = merged
     return _cfg
+
+
+def _node_count_of(conf: dict) -> int:
+    try:
+        n = int(conf.get("node_count") or MIN_NODE_COUNT)
+    except Exception:
+        n = MIN_NODE_COUNT
+    return max(MIN_NODE_COUNT, min(MAX_NODE_COUNT, n))
 
 def _save_config(data: dict) -> None:
     global _cfg, _cfg_mtime
@@ -219,6 +259,13 @@ def cfg(key: str):
     return _cfg.get(key, _CONFIG_DEFAULTS.get(key))
 
 _load_config()
+
+# [six_nodes] Resolve the node list from config, in place so every importer
+# sees the same list object. Restart required after node_count changes.
+NODE_INDICES[:] = list(range(_node_count_of(_cfg)))
+EXTRA_MASTERS[:] = [i for i in NODE_INDICES if i not in MASTER_PAIR and i not in ROTATION_PAIR]
+if EXTRA_MASTERS:
+    _log(f"[config] node_count={len(NODE_INDICES)} — static masters: {EXTRA_MASTERS}")
 
 
 # ── Apply node_state_url override from dashboard config ──────────────────────

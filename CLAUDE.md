@@ -52,11 +52,22 @@ provisioner_server/
 ## Domain model (Dusk staking)
 
 ### Nodes and roles
-- **4 provisioners**, indices `[0,1,2,3]`.
+- **4 to 8 provisioners**, `NODE_INDICES = range(node_count)` (config key
+  `node_count`, default 4, restart required). Per-node config keys
+  `prov_N_address` / `node_N_log` / `node_N_ws_port` are generated per index
+  (ws port convention 8080, 8282, 8383, 8484, 8585, 8686 =
+  `config._default_ws_port`). Marker `[six_nodes]`.
 - `MASTER_PAIR = (0, 1)` and `ROTATION_PAIR = (2, 3)` — **disjoint and
   constant** architectural invariant (config.py). Redistribute owns the
   master pair; rotation + deposit-race own the rotation pair. Mixing them
   caused a real "standby-leakage" bug historically — do not blur the split.
+- **Static masters** `EXTRA_MASTERS = [4, 5, …]` (every index beyond the two
+  pairs): hold a share of the master stake, never rotate, never get the
+  low-stake alert, and are only ever (re)filled as redistribute **landing
+  nodes**. Unstakes front the operator's provisioners in ascending index
+  order, so they sit behind prov[0] and keep their stake untouched as long as
+  prov[0] holds stake. Re-filling an *active* static master costs 2 epochs
+  idle (it must be liquidated first) — by design they are left alone.
 - One master-pair node is the active **master** (`_master_idx()` in rotation.py
   auto-corrects the cached hint from on-chain state). The other is the standby
   / landing zone.
@@ -159,7 +170,29 @@ only 1M is wanted). Every rotation liquidates + re-stakes the whole amount,
 earning only the "rotation" role and idling it during the window. Move the
 excess onto a master-tier node that never recycles — **without the 10% slash**.
 
-### Consolidate-and-hop (4 nodes, master role alternates)
+### Landing list (bootstrap of the static masters) — `[six_nodes]`
+`arm(target_dusk, landing=[idx…], shares=[pct…])`: the moved stake
+(excess + cur_master stake + locked) is split by `shares` over the `landing`
+nodes. The list MUST contain the master-pair standby (the hop target) and may
+add any empty static master. Default = standby at 100% (old behaviour).
+- Every landing node is pre-seeded in the SAME epoch-N window (one wallet
+  batch; the rotation reserves `n × 1000` via `preseed_reserve_dusk`) so all
+  are ta==1 together in N+1 — the split cannot be spread over epochs.
+- The consolidate runs three wallet batches (`_send_batch`, `--batch` +
+  `batch propagate`, same block each): A liquidate cur_master + rot_master,
+  one-block gap, B terminate both, C all stake-activates (landing by share,
+  rot_slave → target, rot_active 1k seed). If the wallet refuses `--batch`
+  the batch degrades to the old one-tx-at-a-time path automatically.
+- Partial pre-seed: the consolidate proceeds with the seeded subset (shares
+  renormalised, TG warning). Lost seed (not ta 1/2) at consolidate → abort,
+  master untouched. Orphaned 1k seeds are cleaned up MANUALLY (no auto
+  cleanup by decision, 2026-10-19).
+- Batch C budget = `max(active headroom, recycled stake)` capped by the pool
+  balance — never clamp below what was just liquidated (capacity-neutral).
+- Dry-run harness (stubs chain + wallet, 6 scenarios) was used during
+  development; `--batch` on liquidate/terminate is NOT yet proven on testnet.
+
+### Consolidate-and-hop (master role alternates between 0 and 1)
 The master role hops between the two `MASTER_PAIR` nodes. Whichever isn't the
 active master is the landing zone for the next redistribution. Recycles forever,
 no 5th node.
@@ -214,15 +247,19 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 
 ### API endpoints (routes/system.py, marker `[redistribute]`)
 - `GET  /api/redistribute/status`
-- `GET  /api/redistribute/preview?target=<dusk>`
-- `POST /api/redistribute/arm` (body `{"target_dusk": ...}`)
+- `GET  /api/redistribute/preview?target=<dusk>[&landing=1,4,5&shares=34,33,33]`
+  (returns `landing`, `shares`, `per_node`, `candidates`, `landing_error`)
+- `POST /api/redistribute/arm` (body `{"target_dusk": ..., "landing": [...], "shares": [...]}`)
 - `POST /api/redistribute/reset`
 
 ### Dashboard UI (provisioner_dashboard.html, marker `[redistribute_ui]`)
 - "redistribute stake" button in the actions nav-row.
-- `#modal-redistribute` with editable target, live preview (calls `/preview`),
+- `#modal-redistribute` with editable target, landing-node checkboxes + share
+  inputs (`_rdLanding`, `rdEqualShares`), live preview (calls `/preview`),
   state line, arm (confirm), reset. JS: `openRedistribute`, `rdPreview`, `rdArm`,
   `rdReset`, `rdRefreshState`.
+- Config modal renders the per-node fields from `node_count`
+  (`_renderCfgNodeFields`); `_ownAddrs()` covers every `prov_N_address`.
 
 ---
 
@@ -297,7 +334,7 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 - Prefer durable, verifiable instructions. When editing large files
   (rotation.py ~1700 lines, dashboard ~3600 lines) work against precise anchors.
 - Keep `main` deployable; feature branches for in-test work
-  (current: `feature/stake-redistribution`).
+  (current: `feature/master-bootstrap` — six nodes + landing list + batches).
 - git over SSH (`git@github.com:wiiinnie/provisioner_server.git`).
 
 ---

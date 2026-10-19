@@ -10,9 +10,9 @@ import json
 import threading
 import time
 
-from .config import _log, RUSK_VERSION, NODE_INDICES, cfg
+from .config import _log, RUSK_VERSION, NODE_INDICES, cfg, _default_ws_port
 
-_node_heights: dict = {0: None, 1: None, 2: None}
+_node_heights: dict = {i: None for i in NODE_INDICES}
 _node_heights_lock  = threading.Lock()
 
 
@@ -44,7 +44,7 @@ def _ws_thread(node_idx: int) -> None:
 
     backoff = 2
     while True:
-        port = int(cfg(f"node_{node_idx}_ws_port") or [8080, 8282, 8383, 8484][node_idx])
+        port = int(cfg(f"node_{node_idx}_ws_port") or _default_ws_port(node_idx))  # [six_nodes]
         url  = f"ws://localhost:{port}/on"
         try:
             ws = _ws.create_connection(url, timeout=10, ping_interval=0)
