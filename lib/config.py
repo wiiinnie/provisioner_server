@@ -77,6 +77,17 @@ def _default_ws_port(idx: int) -> int:
 def _default_log_path(idx: int) -> str:
     return f"/var/log/rusk-{idx + 1}.log"
 
+
+def profile_idx(node_idx: int) -> int:
+    """[six_nodes] sozu-wallet profile index behind a node index. Defaults to
+    the node index; config key node_N_profile_idx overrides it (burned
+    profiles can leave gaps: node 4 → profile 6, node 5 → profile 7)."""
+    v = cfg(f"node_{node_idx}_profile_idx")
+    try:
+        return int(v) if v is not None and str(v) != "" else int(node_idx)
+    except Exception:
+        return int(node_idx)
+
 # ── sozu-wallet config.toml reader ────────────────────────────────────────────
 _SOZU_WALLET_CONFIG_TOML = os.path.expanduser("~/.config/sozu-wallet/config.toml")
 
@@ -227,6 +238,7 @@ def _load_config() -> dict:
         merged.setdefault(f"prov_{i}_address", "")
         merged.setdefault(f"node_{i}_log",     _default_log_path(i))
         merged.setdefault(f"node_{i}_ws_port", _default_ws_port(i))
+        merged.setdefault(f"node_{i}_profile_idx", i)
     _cfg = merged
     return _cfg
 

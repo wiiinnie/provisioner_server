@@ -225,7 +225,8 @@ def set_config():
     current = dict(_current_cfg) if _current_cfg else dict(_CONFIG_DEFAULTS)
     from ..config import MAX_NODE_COUNT, MIN_NODE_COUNT
     # [six_nodes] per-node keys for every index the config may ever hold
-    _node_port_keys = tuple(f"node_{i}_ws_port" for i in range(MAX_NODE_COUNT))
+    _node_port_keys = tuple(f"node_{i}_ws_port" for i in range(MAX_NODE_COUNT)) + \
+                      tuple(f"node_{i}_profile_idx" for i in range(MAX_NODE_COUNT))
     _node_log_keys  = tuple(f"node_{i}_log"     for i in range(MAX_NODE_COUNT))
     _prov_addr_keys = tuple(f"prov_{i}_address" for i in range(MAX_NODE_COUNT))
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",

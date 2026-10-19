@@ -1266,7 +1266,9 @@ function _renderCfgNodeFields() {
       <label style="font-size:11px;color:var(--muted);">Node ${i} WS Port<br><span style="font-size:10px;color:var(--dim)">local rusk ws port</span></label>
       <input class="modal-input" id="cfg-node${i}-ws-port" type="number" style="margin:0;" placeholder="${_defaultWsPort(i)}">
       <label style="font-size:11px;color:var(--muted);">Prov ${i} Address</label>
-      <input class="modal-input" id="cfg-prov-${i}-address" type="text" style="margin:0;" placeholder="BLS key…">`
+      <input class="modal-input" id="cfg-prov-${i}-address" type="text" style="margin:0;" placeholder="BLS key…">
+      <label style="font-size:11px;color:var(--muted);">Node ${i} Wallet Profile<br><span style="font-size:10px;color:var(--dim)">sozu_provisioner --profile-idx (default ${i}; differs when profiles were burned)</span></label>
+      <input class="modal-input" id="cfg-node${i}-profile" type="number" min="0" style="margin:0;" placeholder="${i}">`
   }
   host.innerHTML = html
   for (const el of host.querySelectorAll('input')) {
@@ -1274,6 +1276,7 @@ function _renderCfgNodeFields() {
     else if (el.id.endsWith('-log')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`node_${i}_log`] || _defaultNodeLog(i) }
     else if (el.id.endsWith('-ws-port')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`node_${i}_ws_port`] ?? _defaultWsPort(i) }
     else if (el.id.endsWith('-address')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`prov_${i}_address`] || '' }
+    else if (el.id.endsWith('-profile')) { const i = parseInt(el.id.match(/\d+/)[0]); el.value = _cfg[`node_${i}_profile_idx`] ?? i }
   }
 }
 
@@ -1283,6 +1286,8 @@ function _cfgNodePayload() {
     out[`node_${i}_log`]     = document.getElementById(`cfg-node${i}-log`)?.value.trim() || _defaultNodeLog(i)
     out[`node_${i}_ws_port`] = parseInt(document.getElementById(`cfg-node${i}-ws-port`)?.value) || _defaultWsPort(i)
     out[`prov_${i}_address`] = document.getElementById(`cfg-prov-${i}-address`)?.value.trim() || ''
+    const _pi = parseInt(document.getElementById(`cfg-node${i}-profile`)?.value)
+    out[`node_${i}_profile_idx`] = isNaN(_pi) ? i : _pi
   }
   return out
 }
@@ -2221,6 +2226,7 @@ async function loadConfig() {
       document.getElementById(`cfg-node${i}-log`).value     = _cfg[`node_${i}_log`] || _defaultNodeLog(i)
       document.getElementById(`cfg-node${i}-ws-port`).value = _cfg[`node_${i}_ws_port`] ?? _defaultWsPort(i)
       document.getElementById(`cfg-prov-${i}-address`).value = _cfg[`prov_${i}_address`] || ''
+      document.getElementById(`cfg-node${i}-profile`).value  = _cfg[`node_${i}_profile_idx`] ?? i
     }
     document.getElementById('cfg-rotation').value       = _cfg.rotation_window ?? 41
     document.getElementById('cfg-snatch').value         = _cfg.snatch_window ?? 11

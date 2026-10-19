@@ -9,6 +9,7 @@ import time
 from flask import Blueprint, jsonify, request
 
 from ..config import (
+    profile_idx,  # [six_nodes]
     _NET, OPERATOR_ADDRESS, NODE_INDICES, RUSK_VERSION, GRAPHQL_URL,
     cfg, _load_config, _save_config,
 )
@@ -264,7 +265,7 @@ def provisioner_remove_provisioner():
 
     results, status, has_stake = {}, None, False
     if idx is not None:
-        r_info    = wallet_cmd(f"--profile-idx {idx} stake-info", timeout=20, password=pw)
+        r_info    = wallet_cmd(f"--profile-idx {profile_idx(idx)} stake-info", timeout=20, password=pw)
         info      = parse_stake_info(r_info.get("stdout", "") + r_info.get("stderr", ""))
         status    = info.get("status", "inactive")
         has_stake = info.get("has_stake", False)

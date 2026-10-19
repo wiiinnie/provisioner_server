@@ -57,6 +57,10 @@ provisioner_server/
   `prov_N_address` / `node_N_log` / `node_N_ws_port` are generated per index
   (ws port convention 8080, 8282, 8383, 8484, 8585, 8686 =
   `config._default_ws_port`). Marker `[six_nodes]`.
+- **Node index ≠ wallet profile index.** `config.profile_idx(node_idx)` reads
+  `node_N_profile_idx` (default N). Two burned profiles mean node 4 → profile
+  6 and node 5 → profile 7. Every `--profile-idx` call goes through it; the
+  automation itself is address-based (`--provisioner`) and unaffected.
 - `MASTER_PAIR = (0, 1)` and `ROTATION_PAIR = (2, 3)` — **disjoint and
   constant** architectural invariant (config.py). Redistribute owns the
   master pair; rotation + deposit-race own the rotation pair. Mixing them

@@ -10,6 +10,7 @@ import threading
 from flask import Blueprint, jsonify, request
 
 from ..config import (
+    profile_idx,  # [six_nodes]
     _NET, NETWORK_ID, OPERATOR_ADDRESS, CONTRACT_ID, RUSK_VERSION,
     GAS_LIMIT, GRAPHQL_URL, _NODE_STATE_URL, NODE_INDICES,
 )
@@ -43,7 +44,7 @@ def _valid_amount(v):
 @bp.route("/api/stake_info/<int:idx>", methods=["GET", "POST"])
 def stake_info(idx: int):
     """Per-index stake-info via provisioner wallet."""
-    result = wallet_cmd(f"--profile-idx {idx} stake-info", timeout=20, password=get_password())
+    result = wallet_cmd(f"--profile-idx {profile_idx(idx)} stake-info", timeout=20, password=get_password())
     return jsonify(result)
 
 
@@ -81,7 +82,7 @@ def balance_operator():
 @bp.route("/api/balance/provisioner/<int:idx>", methods=["GET", "POST"])
 def balance_provisioner(idx: int):
     pw = (request.get_json(silent=True) or {}).get("password") or get_password()
-    return jsonify(wallet_cmd(f"--profile-idx {idx} balance", timeout=20, password=pw))
+    return jsonify(wallet_cmd(f"--profile-idx {profile_idx(idx)} balance", timeout=20, password=pw))
 
 
 @bp.route("/api/balance", methods=["GET", "POST"])
@@ -93,7 +94,7 @@ def balance():
 @bp.route("/api/balance/<int:idx>", methods=["GET", "POST"])
 def balance_idx(idx: int):
     pw = (request.get_json(silent=True) or {}).get("password") or get_password()
-    return jsonify(wallet_cmd(f"--profile-idx {idx} balance", timeout=20, password=pw))
+    return jsonify(wallet_cmd(f"--profile-idx {profile_idx(idx)} balance", timeout=20, password=pw))
 
 
 @bp.route("/api/profiles", methods=["GET", "POST"])
@@ -383,7 +384,7 @@ def stake():
         return jsonify({"ok": False, "stderr": f"idx must be one of {NODE_INDICES}"}), 400
     if amount is None:
         return jsonify({"ok": False, "stderr": "amount must be a positive number"}), 400
-    return jsonify(wallet_cmd(f"--profile-idx {idx} stake --amt {amount}",
+    return jsonify(wallet_cmd(f"--profile-idx {profile_idx(idx)} stake --amt {amount}",
                               timeout=60, password=data.get("password", "")))
 
 
@@ -393,7 +394,7 @@ def unstake():
     idx  = _valid_idx(data.get("idx"))
     if idx is None:
         return jsonify({"ok": False, "stderr": f"idx must be one of {NODE_INDICES}"}), 400
-    return jsonify(wallet_cmd(f"--profile-idx {idx} unstake",
+    return jsonify(wallet_cmd(f"--profile-idx {profile_idx(idx)} unstake",
                               timeout=60, password=data.get("password", "")))
 
 
@@ -403,5 +404,5 @@ def withdraw_reward():
     idx  = _valid_idx(data.get("idx"))
     if idx is None:
         return jsonify({"ok": False, "stderr": f"idx must be one of {NODE_INDICES}"}), 400
-    return jsonify(wallet_cmd(f"--profile-idx {idx} withdraw-reward",
+    return jsonify(wallet_cmd(f"--profile-idx {profile_idx(idx)} withdraw-reward",
                               timeout=60, password=data.get("password", "")))
