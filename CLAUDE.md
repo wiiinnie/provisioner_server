@@ -183,6 +183,15 @@ excess onto a master-tier node that never recycles — **without the 10% slash**
 (excess + cur_master stake + locked) is split by `shares` over the `landing`
 nodes. The list MUST contain the master-pair standby (the hop target) and may
 add any empty static master. Default = standby at 100% (old behaviour).
+- **A new static master must be registered with the operator first** ("add
+  provisioner" button = `pool add-provisioner`, operator wallet). Otherwise
+  the seed reverts with `[pool] The provisioner should be associated with an
+  operator` (happened on testnet 2026-10-19: prov[4]/[5] failed, prov[1]
+  seeded alone → partial). Marker `[landing_registered]`: `assess` sets
+  `registered` per node (address present in the operator's stake-info list),
+  the preview flags it, `arm()` refuses it, `wants_preseed` defers on it.
+  Note the "list provisioners" button lists WALLET PROFILES, not the on-chain
+  registration — use `stake-info --operator` for that.
 - Every landing node is pre-seeded in the SAME epoch-N window (one wallet
   batch; the rotation reserves `n × 1000` via `preseed_reserve_dusk`) so all
   are ta==1 together in N+1 — the split cannot be spread over epochs.

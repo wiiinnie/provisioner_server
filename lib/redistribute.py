@@ -240,6 +240,13 @@ def _landing_shares(landing: list, shares) -> dict:
     return out
 
 
+def _unregistered(landing, nodes: dict) -> list:
+    """[landing_registered] landing nodes whose address is NOT listed under
+    the operator in the pool contract. Unknown (list unavailable) counts as
+    registered so a wallet hiccup cannot block an arm."""
+    return [i for i in landing if nodes.get(i, {}).get("registered") is False]
+
+
 def validate_landing(landing, cur_master_idx: int) -> tuple:
     """Check a landing list against the role split. Returns (landing, hop_idx)
     or raises ValueError. The list MUST contain the master-pair standby (the
@@ -299,6 +306,17 @@ def arm(target_dusk: float | None = None, landing=None, shares=None) -> dict:
         share_map        = _landing_shares(landing, shares)
     except ValueError as ve:
         return {"ok": False, "error": str(ve)}
+
+    # [landing_registered] a stake-activate on a key the pool contract does not
+    # know reverts ("The provisioner should be associated with an operator").
+    try:
+        nodes = R._assess().get("by_idx", {})
+    except Exception as e:
+        return {"ok": False, "error": f"cannot assess nodes: {e}"}
+    unreg = _unregistered(landing, nodes)
+    if unreg:
+        return {"ok": False, "error": f"prov{unreg} not registered with the operator — "
+                                      f"run 'add provisioner' for them first"}
 
     share_str = ", ".join(f"prov[{i}] {share_map[i]:.1f}%" for i in landing)
     with _rd_state_lock:
@@ -577,6 +595,12 @@ def wants_preseed(cur_epoch: int) -> bool:
             landing, hop_idx = validate_landing(landing, cur_master_idx)
         except ValueError as ve:
             _rdlog_warn(f"preseed check: landing invalid for master prov[{cur_master_idx}] ({ve}) — deferring")
+            return False
+
+        unreg = _unregistered(landing, nodes)
+        if unreg:
+            _rdlog_warn(f"preseed: landing prov{unreg} not registered with the operator "
+                        f"(pool add-provisioner) — deferring, the seed would revert")
             return False
 
         # Every landing node must currently be inactive (a clean landing zone).

@@ -88,7 +88,7 @@ def redistribute_preview():
     master-pair standby at 100%)."""
     try:
         from ..redistribute import (_preview_amounts, DEFAULT_TARGET_DUSK, validate_landing,
-                                    _landing_shares)
+                                    _landing_shares, _unregistered)
         from ..rotation import _assess, _master_idx, ROTATION_PAIR
         from ..config import MASTER_PAIR, EXTRA_MASTERS
         target = float(request.args.get("target", DEFAULT_TARGET_DUSK))
@@ -118,7 +118,8 @@ def redistribute_preview():
             n = nodes.get(i, {})
             candidates.append({"idx": i, "kind": "hop" if i in MASTER_PAIR else "static",
                                "status": n.get("status"), "ta": n.get("ta"),
-                               "stake": n.get("stake_dusk", 0.0)})
+                               "stake": n.get("stake_dusk", 0.0),
+                               "registered": n.get("registered")})   # [landing_registered]
         return jsonify({
             "ok": True,
             "target": target,
@@ -131,6 +132,7 @@ def redistribute_preview():
             "candidates": candidates,
             "new_master_inactive": nodes.get(new_master_idx, {}).get("status") == "inactive",
             "landing_all_inactive": all(nodes.get(i, {}).get("status") == "inactive" for i in landing),
+            "landing_unregistered": _unregistered(landing, nodes),   # [landing_registered]
             **pv,
         })
     except Exception as e:

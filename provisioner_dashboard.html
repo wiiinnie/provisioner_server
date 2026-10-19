@@ -1730,13 +1730,16 @@ function _rdRenderLanding() {
     const on   = c.idx in _rdLanding
     const hop  = c.kind === 'hop'
     const free = c.status === 'inactive'
-    const state = free ? 'inactive — ready' : `${c.status}${c.ta != null ? ' ta=' + c.ta : ''} — NOT free`
+    const unreg = c.registered === false   // [landing_registered]
+    const state = unreg ? 'NOT registered — "add provisioner" first'
+                : free ? 'inactive — ready' : `${c.status}${c.ta != null ? ' ta=' + c.ta : ''} — NOT free`
+    if (unreg && !hop && on) delete _rdLanding[c.idx]
     html += `<div style="display:flex;align-items:center;gap:8px;">
-      <input type="checkbox" id="rd-land-${c.idx}" ${on ? 'checked' : ''} ${hop ? 'checked disabled' : ''} onchange="rdToggleLanding(${c.idx})">
+      <input type="checkbox" id="rd-land-${c.idx}" ${on && !unreg ? 'checked' : ''} ${hop ? 'checked disabled' : (unreg ? 'disabled' : '')} onchange="rdToggleLanding(${c.idx})">
       <span style="min-width:150px;font-family:'IBM Plex Mono',monospace;">prov[${c.idx}] ${hop ? 'standby (hop)' : 'static master'}</span>
       <input type="number" id="rd-share-${c.idx}" min="0.1" max="100" step="0.1" value="${on ? (+_rdLanding[c.idx]).toFixed(1) : ''}" ${on ? '' : 'disabled'}
              style="width:64px;font-size:11px;padding:1px 4px;" oninput="rdShareInput(${c.idx})"> %
-      <span style="color:${free ? 'var(--dim)' : 'var(--yellow)'};">${state}${c.stake > 0 ? ' · ' + _rdFmt(c.stake) + ' DUSK' : ''}</span>
+      <span style="color:${unreg ? 'var(--red)' : free ? 'var(--dim)' : 'var(--yellow)'};">${state}${c.stake > 0 ? ' · ' + _rdFmt(c.stake) + ' DUSK' : ''}</span>
     </div>`
   }
   host.innerHTML = html
@@ -1822,6 +1825,8 @@ async function rdPreview(keepLanding = false) {
     const warns = []
     if (d.landing_error) warns.push(`⚠ landing selection rejected: ${d.landing_error} (showing the default)`)
     if (!d.landing_all_inactive) warns.push('⚠ a landing node is NOT inactive — pre-seed will defer until it is free')
+    if ((d.landing_unregistered || []).length)   // [landing_registered]
+      warns.push(`✖ prov[${d.landing_unregistered.join(', ')}] not registered with the operator — the seed would revert; run "add provisioner" first (arm is refused)`)
     el.style.color = 'var(--muted)'
     el.textContent =
       `cur master   prov[${d.cur_master_idx}]   ${_rdFmt(d.master_stake)} + ${_rdFmt(d.master_locked || 0)} locked DUSK  (liquidated, moves to the landing nodes)\n` +

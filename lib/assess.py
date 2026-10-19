@@ -330,6 +330,9 @@ def _assess_state(tip: int, pw: str) -> dict:
             "slashed_dusk":      locked_dusk,
             "rewards_dusk":      reward_dusk,
             "has_stake":         stake_dusk >= MIN_STAKE_DUSK,
+            # [landing_registered] address listed under the operator in the
+            # pool contract (pool add-provisioner). None = list unavailable.
+            "registered":        (entry is not None) if si_list else None,
         }
         nodes_by_idx[idx] = node
         with _stake_cache_lock:
