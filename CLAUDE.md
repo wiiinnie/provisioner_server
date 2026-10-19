@@ -58,9 +58,13 @@ provisioner_server/
   (ws port convention 8080, 8282, 8383, 8484, 8585, 8686 =
   `config._default_ws_port`). Marker `[six_nodes]`.
 - **Node index ≠ wallet profile index.** `config.profile_idx(node_idx)` reads
-  `node_N_profile_idx` (default N). Two burned profiles mean node 4 → profile
-  6 and node 5 → profile 7. Every `--profile-idx` call goes through it; the
-  automation itself is address-based (`--provisioner`) and unaffected.
+  `node_N_profile_idx` (default N). Profiles can be "burnt" (a stake-contract
+  edge case after a bad liquidate/terminate sequence makes the key useless;
+  NOT visible as faults in stake-info), so the mapping is free-form. Testnet
+  2026-10-19: node 2 → 3, node 3 → 4, node 4 → 5, node 5 → 6 (profile 2 is
+  burnt). Every `--profile-idx` call goes through it; the automation itself is
+  address-based (`--provisioner`) and unaffected. Note `sozu-wallet stake-info`
+  ignores `--profile-idx` — query with `--provisioner <addr>`.
 - `MASTER_PAIR = (0, 1)` and `ROTATION_PAIR = (2, 3)` — **disjoint and
   constant** architectural invariant (config.py). Redistribute owns the
   master pair; rotation + deposit-race own the rotation pair. Mixing them
