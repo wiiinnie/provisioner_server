@@ -9,8 +9,8 @@ set -e
 # with multi-instance support layered on top.
 #
 # Key changes from v3:
-#   - Hardcoded versions per network (rusk 1.7.0, rusk-wallet 0.3.0/0.4.0)
-#   - Adds RUSK_CONSENSUS_SPIN_TIME to systemd service (CRITICAL for 1.7.0)
+#   - Hardcoded versions per network (rusk 1.7.1, rusk-wallet 0.3.0/0.4.0)
+#   - Adds RUSK_CONSENSUS_SPIN_TIME to systemd service (CRITICAL since 1.7.0)
 #   - Fixes URL construction (new dusk-rusk-{version} tag scheme since 1.0.0)
 #   - Configures rusk-wallet ~/.dusk/rusk-wallet/config.toml (instance 1 only)
 #   - Applies sysctl tuning via /etc/sysctl.d/dusk.conf (instance 1 only)
@@ -29,16 +29,16 @@ set -e
 #############################################
 declare -A VERSIONS
 VERSIONS=(
-    ["mainnet-rusk"]="1.7.0"
+    ["mainnet-rusk"]="1.7.1"
     ["mainnet-rusk-wallet"]="0.3.0"
-    ["testnet-rusk"]="1.7.0"
+    ["testnet-rusk"]="1.7.1"
     ["testnet-rusk-wallet"]="0.4.0"
-    ["devnet-rusk"]="1.7.0"
+    ["devnet-rusk"]="1.7.1"
     ["devnet-rusk-wallet"]="0.4.0"
 )
 
 #############################################
-# Consensus spin times (CRITICAL for rusk 1.7.0)
+# Consensus spin times (CRITICAL since rusk 1.7.0)
 #############################################
 MAINNET_CONSENSUS_SPIN_TIME="1781175600"
 TESTNET_CONSENSUS_SPIN_TIME="1779886800"

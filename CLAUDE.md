@@ -297,11 +297,12 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 2. **Rotation ↔ redistribute window contention.** Both run in the same epoch N+1
    window and share pool balance / capacity. Consolidate is ordered BEFORE the
    normal rotation body; verify on testnet they don't step on each other.
-3. **rusk 1.7.1 upgrade (deferred).** The multi-node installer
-   (`node_installer_multi.sh`) can't be re-run for rusk 1.7.1: tag scheme changed
-   to `dusk-rusk-<ver>`, a `-default` feature suffix is now mandatory, and a new
-   `RUSK_CONSENSUS_SPIN_TIME` env var is required (mainnet 1781175600, testnet
-   1779886800). Needs an upgrade-only script, not a reinstall.
+3. **rusk version pin.** `node_installer_multi.sh` v4 already handles the
+   `dusk-rusk-<ver>` tag scheme, the `-default` feature suffix and
+   `RUSK_CONSENSUS_SPIN_TIME` (mainnet 1781175600, testnet 1779886800); the
+   pinned version is 1.7.1 (bumped 2026-10-19 for the rusk-5/6 install). Bump
+   the `VERSIONS` table when upstream moves on. There is still no upgrade-only
+   script for existing instances (reinstall = state wipe).
 
 ---
 
