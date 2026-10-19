@@ -636,7 +636,7 @@ def _run_snatch(cur_epoch: int, blk_left: int) -> None:
             except Exception:
                 pass
         else:
-            _rlog_err(f"snatch window: allocation failed: {r.get('stderr','')[:100]}")
+            _rlog_err(f"snatch window: allocation failed: {r.get('stderr','')[:400]}")
     except Exception as e:
         _rlog_err(f"snatch window error: {e}")
 
@@ -1071,7 +1071,7 @@ def _run_sweeper(candidate_dusk: float, delta: float, blk_left: int) -> None:
             except Exception:
                 pass
         else:
-            _rlog_err(f"sweeper: allocation failed: {r.get('stderr','')[:100]}")
+            _rlog_err(f"sweeper: allocation failed: {r.get('stderr','')[:400]}")
 
     except Exception as e:
         _rlog_err(f"sweeper error: {e}")
