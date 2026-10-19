@@ -330,6 +330,15 @@
   #col-mid.rues-collapsed { flex-direction: column; }
 
   /* ── RIGHT: PLACEHOLDER ── */
+  /* ── [prov_filter] role filter buttons ── */
+  .prov-filter-btn {
+    font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;
+    padding:3px 8px;background:transparent;border:1px solid transparent;border-radius:3px;
+    color:var(--dim);cursor:pointer;
+  }
+  .prov-filter-btn:hover { color:var(--muted); }
+  .prov-filter-btn.active { color:var(--teal);border-color:var(--border); }
+
   /* ── Live provisioner panel ── */
   .prov-card {
     background: var(--bg2);
@@ -893,6 +902,12 @@
         style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.07em;padding:5px 14px;
                background:transparent;border:none;border-bottom:2px solid transparent;
                color:var(--dim);cursor:pointer;">HISTORY</button>
+      <!-- [prov_filter] role filter for the LIVE cards: all / master / rotation -->
+      <div id="prov-filter" style="margin-left:auto;display:flex;align-items:center;gap:2px;padding-right:8px;">
+        <button id="prov-filter-all" onclick="_provFilterSet('all')" class="prov-filter-btn">ALL</button>
+        <button id="prov-filter-master" onclick="_provFilterSet('master')" class="prov-filter-btn">MASTER</button>
+        <button id="prov-filter-rotation" onclick="_provFilterSet('rotation')" class="prov-filter-btn">ROTATION</button>
+      </div>
     </div>
 
     <!-- LIVE tab content: provisioner cards (dynamic) -->
@@ -1312,11 +1327,42 @@ function _renderLiveCardContainers() {
   host.innerHTML = _NODE_INDICES.map((idx, i) => {
     const isLast = i === _NODE_INDICES.length - 1
     const border = isLast ? '' : 'border-bottom:1px solid var(--border);'
-    return `<div style="flex-shrink:0;${border}display:flex;flex-direction:column;">
+    return `<div id="node${idx}-wrap" data-role="${_nodeRole(idx)}" style="flex-shrink:0;${border}display:flex;flex-direction:column;">
       <div id="node${idx}-header" style="padding:6px 14px 4px;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);display:flex;align-items:center;">Provisioner ${idx}</div>
       <div id="node${idx}-body" style="padding:0 14px 8px;"></div>
     </div>`
   }).join('')
+  _provFilterApply()
+}
+
+// ── [prov_filter] LIVE card role filter ─────────────────────────────────────
+// Roles mirror config.py: ROTATION_PAIR = (2, 3); everything else is master
+// tier (the hop pair 0/1 plus the static masters 4+).
+function _nodeRole(idx) { return (idx === 2 || idx === 3) ? 'rotation' : 'master' }
+let _provFilter = 'all'
+try { _provFilter = localStorage.getItem('prov_filter') || 'all' } catch (e) {}
+function _provFilterSet(f) {
+  _provFilter = f
+  try { localStorage.setItem('prov_filter', f) } catch (e) {}
+  _provFilterApply()
+}
+function _provFilterApply() {
+  for (const f of ['all', 'master', 'rotation']) {
+    const b = document.getElementById(`prov-filter-${f}`)
+    if (b) b.classList.toggle('active', f === _provFilter)
+  }
+  let lastVisible = null
+  for (const idx of _NODE_INDICES) {
+    const w = document.getElementById(`node${idx}-wrap`)
+    if (!w) continue
+    const show = _provFilter === 'all' || w.dataset.role === _provFilter
+    w.style.display = show ? 'flex' : 'none'
+    if (show) {
+      w.style.borderBottom = '1px solid var(--border)'
+      lastVisible = w
+    }
+  }
+  if (lastVisible) lastVisible.style.borderBottom = ''
 }
 
 // ── DYNAMIC RENDERING: MODAL ROWS ────────────────────────────────────────────
@@ -3864,6 +3910,8 @@ function _provTab(tab) {
   tabLive.style.color             = isLive ? 'var(--teal)' : 'var(--dim)'
   tabHist.style.borderBottomColor = isLive ? 'transparent' : 'var(--teal)'
   tabHist.style.color             = isLive ? 'var(--dim)' : 'var(--teal)'
+  const filt = document.getElementById('prov-filter')
+  if (filt) filt.style.display = isLive ? 'flex' : 'none'
   if (!isLive) _histLoad()
 }
 
