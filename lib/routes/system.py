@@ -34,6 +34,21 @@ def ping():
     return jsonify({"ok": True, "ts": datetime.now().isoformat()})
 
 
+@bp.route("/api/system/disk")
+def system_disk():
+    """[disk_chip] free space of the filesystem holding the node state. /opt
+    (rusk state + chain.db) first; falls back to / when /opt is missing."""
+    import shutil
+    for path in ("/opt", "/"):
+        try:
+            u = shutil.disk_usage(path)
+        except Exception:
+            continue
+        return jsonify({"ok": True, "path": path, "total": u.total, "used": u.used,
+                        "free": u.free, "free_pct": round(u.free * 100.0 / u.total, 1) if u.total else 0.0})
+    return jsonify({"ok": False, "error": "disk usage unavailable"})
+
+
 @bp.route("/")
 def index():
     here = os.path.dirname(os.path.abspath(__file__))

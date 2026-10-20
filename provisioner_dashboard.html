@@ -538,6 +538,11 @@
       <span class="dot dot-yellow"></span>
       <span id="tip-val">—</span>
     </div>
+    <!-- [disk_chip] free space on the VPS state filesystem -->
+    <div class="status-chip" id="disk-chip" title="free disk space (node state filesystem)">
+      <span class="dot dot-yellow" id="disk-dot"></span>
+      <span id="disk-val">disk —</span>
+    </div>
     <div class="status-chip" id="clock"></div>
     <div class="strip-sep"></div>
     <button class="strip-btn" onclick="openModal('modal-config')" id="cfg-strip-btn">⚙ config</button>
@@ -1518,6 +1523,30 @@ async function updateTip() {
 }
 updateTip()
 setInterval(updateTip, 8000)
+
+// ── [disk_chip] DISK FREE ─────────────────────────────────────────────────────
+// green ≥ 20% free, yellow ≥ 10%, red below (rusk state grows steadily; a full
+// disk corrupts chain.db mid-write).
+async function updateDisk() {
+  const dot = document.getElementById('disk-dot')
+  const val = document.getElementById('disk-val')
+  try {
+    const r = await fetch(`${API}/api/system/disk`, {signal: AbortSignal.timeout(5000)})
+    const d = await r.json()
+    if (!d.ok) throw new Error(d.error || 'n/a')
+    const gb  = d.free / 1e9
+    const pct = d.free_pct
+    val.textContent = `disk ${gb >= 100 ? gb.toFixed(0) : gb.toFixed(1)} GB free (${pct.toFixed(0)}%)`
+    dot.className = 'dot ' + (pct >= 20 ? 'dot-green' : pct >= 10 ? 'dot-yellow' : 'dot-red')
+    document.getElementById('disk-chip').title =
+      `${d.path}: ${(d.used / 1e9).toFixed(1)} GB used of ${(d.total / 1e9).toFixed(1)} GB`
+  } catch (e) {
+    val.textContent = 'disk —'
+    dot.className = 'dot dot-yellow'
+  }
+}
+updateDisk()
+setInterval(updateDisk, 60000)
 
 // ── OUTPUT PANEL ──────────────────────────────────────────────────────────────
 function clearOutput() {
