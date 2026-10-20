@@ -1132,7 +1132,7 @@
       <span style="font-size:10px;color:var(--dim)">stake to keep on the rotation node; excess is redistributed (default 1,000,000)</span>
     </label>
     <input class="modal-input" id="rd-target" type="number" step="10000" min="1000"
-           value="1000000" style="margin:0 0 10px 0;" oninput="rdPreview()">
+           value="1000000" style="margin:0 0 10px 0;" oninput="rdPreview(true)">  <!-- keepLanding: typing the target must not reset the landing ticks -->
 
     <div id="rd-preview" style="font-family:'IBM Plex Mono',monospace;font-size:11px;
          background:var(--bg2);border:1px solid var(--border);border-radius:4px;
