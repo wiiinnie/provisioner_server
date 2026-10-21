@@ -104,6 +104,7 @@ MIN_TOPUP_DUSK      = 10.0            # smallest top-up leg worth a tx
 DEFAULT_TARGET_DUSK = 1_000_000.0     # default rot_master target
 TX_CONFIRM_TIMEOUT  = 120             # seconds to wait for tx/executed
 TOPUP_RETRIES       = 2               # retries on a failed landing top-up
+RESEED_RETRIES      = 4               # [reseed_retry] pre-seed re-attempts after a lost seed
 
 STATE_FILE = os.path.expanduser("~/.sozu_redistribute.json")
 LOG_PATH   = os.path.expanduser("~/.sozu_redistribute.log")
@@ -123,6 +124,7 @@ _state_default = {
     "shares":         {},     # [six_nodes] {"idx": pct} — percentage of the moved stake per landing node
     "armed_epoch":    None,
     "preseed_epoch":  None,
+    "reseed_retries": 0,      # [reseed_retry] how often a lost seed sent us back to ARMED
     "status_msg":     "",
 }
 
@@ -329,6 +331,7 @@ def arm(target_dusk: float | None = None, landing=None, shares=None) -> dict:
             "shares":         dict(share_map),
             "armed_epoch":    None,
             "preseed_epoch":  None,
+            "reseed_retries": 0,
             "status_msg":     f"armed — target rot_master {target:,.0f} DUSK, landing {share_str}; "
                               f"waiting for next rotation window",
         })
@@ -413,7 +416,8 @@ def _preview_amounts(nodes: dict, target_dusk: float,
 
 
 # ── Wallet batches ────────────────────────────────────────────────────────────
-_BATCH_FN = {"liquidate": "liquidate", "terminate": "terminate", "stake_activate": "stake_activate"}
+_BATCH_FN = {"liquidate": "liquidate", "terminate": "terminate", "stake_activate": "stake_activate",
+             "stake_deactivate": "stake_deactivate"}
 _BENIGN_EMPTY = ("no stake", "does not exist", "nothing to", "not eligible", "should be active")
 
 
@@ -426,6 +430,8 @@ def _leg_cmd(leg: dict, batch: bool) -> str:
         return f"pool liquidate --skip-confirmation{bflag} --provisioner {leg['addr']}"
     if kind == "terminate":
         return f"pool terminate --skip-confirmation{bflag} --provisioner {leg['addr']}"
+    if kind == "stake_deactivate":
+        return f"pool stake-deactivate --skip-confirmation{bflag} --provisioner {leg['addr']}"
     if kind == "stake_activate":
         return (f"pool stake-activate --skip-confirmation{bflag} "
                 f"--amount {int(leg['lux'])} --provisioner {leg['addr']} "
@@ -766,6 +772,75 @@ def perform_preseed(cur_epoch: int) -> None:
     _save_state()
 
 
+def _lost_seed_retry(cur_epoch: int, nodes: dict, tas: dict) -> None:
+    """[reseed_retry] A landing seed was eaten (typically the hop node's 1k on
+    prov[0] by an unstake in epoch N+1 — the fronting guard only sees epoch N).
+    Instead of aborting and orphaning the surviving seeds as active 1k nodes:
+    return the survivors (ta 1/2) to the pool with stake-deactivate, go back
+    to ARMED and let the normal pre-seed path re-seed EVERY landing node after
+    this window's rotation (the rotation reserves the seeds again). The master
+    is never touched; the cost per attempt is the seed tx fees and 1k per node
+    idling one more epoch. After RESEED_RETRIES lost seeds we give up — but
+    still deactivate the survivors so nothing is left active at 1k.
+    """
+    R = _rot_helpers()
+    with _rd_state_lock:
+        landing = list(_rd_state.get("landing") or [])
+        retries = int(_rd_state.get("reseed_retries") or 0) + 1
+    lost      = [i for i in landing if tas.get(i) not in (1, 2)]
+    survivors = [i for i in landing if tas.get(i) in (1, 2)]
+    give_up   = retries > RESEED_RETRIES
+
+    _rdlog_err(f"consolidate: landing ta={tas} — pre-seed on prov{lost} was lost (eaten by an "
+               f"unstake). Master untouched. "
+               + (f"Retry {retries}/{RESEED_RETRIES}: returning the surviving seed(s) prov{survivors} "
+                  f"to the pool and re-seeding after this window's rotation."
+                  if not give_up else
+                  f"Lost seed #{retries} exceeds RESEED_RETRIES={RESEED_RETRIES} — giving up, "
+                  f"returning prov{survivors} to the pool and resetting."))
+
+    orphans = []
+    if survivors:
+        legs = []
+        for i in survivors:
+            addr = R._addr(i, nodes)
+            if not addr:
+                _rdlog_err(f"  deactivate prov[{i}]: no address — left as is")
+                orphans.append(i)
+                continue
+            legs.append({"kind": "stake_deactivate", "addr": addr, "idx": i, "tag": i})
+        res = _send_batch(R, legs, label="reseed-retry deactivate")
+        for leg in legs:
+            r = res.get(leg["tag"]) or {}
+            if r.get("ok"):
+                _rdlog_ok(f"  prov[{leg['idx']}] seed deactivated — {SEED_DUSK:.0f} DUSK back in the pool")
+            else:
+                orphans.append(leg["idx"])
+                _rdlog_err(f"  deactivate prov[{leg['idx']}] FAILED: {r.get('err')}")
+    if orphans:
+        _rdlog_err(f"  prov{orphans} still hold their seed and go ACTIVE at 1k next boundary — free "
+                   f"them manually (liquidate, 2 blocks, terminate) before the pre-seed can run again")
+        _tg("alert_info", f"⚠️ Redistribution: seed on prov{orphans} could not be returned to the pool — "
+                          f"it goes active at 1k next boundary. Free it manually (liquidate → terminate).")
+
+    if give_up:
+        _notify_failed(f"pre-seed on prov{lost} lost {retries} times (ta={tas}); "
+                       f"survivors prov{survivors} returned to the pool; redistribution aborted")
+        reset()
+        return
+
+    with _rd_state_lock:
+        _rd_state["state"]          = ARMED
+        _rd_state["preseed_epoch"]  = None
+        _rd_state["reseed_retries"] = retries
+        _rd_state["status_msg"]     = (f"pre-seed lost on prov{lost} (retry {retries}/{RESEED_RETRIES}) — "
+                                       f"back to ARMED, re-seeding prov{landing} after the next rotation")
+    _save_state()
+    _tg("alert_info", f"⚠️ Redistribution pre-seed on prov{lost} was eaten by an unstake "
+                      f"(retry {retries}/{RESEED_RETRIES}). Survivors prov{survivors} returned to the "
+                      f"pool; all landing nodes are re-seeded after this window's rotation. Master untouched.")
+
+
 def wants_consolidate(cur_epoch: int) -> bool:
     """True if we are PRESEEDED and EVERY landing node has reached ta==1 —
     meaning the consolidate can run in THIS rotation window. If a landing
@@ -787,11 +862,7 @@ def wants_consolidate(cur_epoch: int) -> bool:
             return True
         lost = [i for i, t in tas.items() if t not in (1, 2)]
         if lost:
-            _rdlog_err(f"consolidate ABORT: landing ta={tas} — prov{lost} not maturing, "
-                       f"pre-seed was lost. Master untouched. Resetting.")
-            _notify_failed(f"landing nodes prov{lost} not ta==1 (ta={tas}); "
-                           f"pre-seed lost, redistribution aborted")
-            reset()
+            _lost_seed_retry(cur_epoch, nodes, tas)
         else:
             _rdlog_warn(f"consolidate hold: landing ta={tas} — waiting one more epoch for ta==1")
         return False
@@ -886,11 +957,18 @@ def perform_consolidate(cur_epoch: int) -> bool:
 
     # ── Guard 1: no-master — every landing node must be ta==1 ─────────────────
     not_ready = [i for i in landing if nodes.get(i, {}).get("ta") != 1]
-    if not landing or not_ready:
-        _rdlog_err(f"consolidate ABORT: landing prov{not_ready or landing} not ta==1 at execute time — "
-                   f"master untouched.")
-        _notify_failed(f"landing nodes prov{not_ready or landing} not ta==1 at execute — aborted")
+    if not landing:
+        _rdlog_err("consolidate ABORT: landing list empty at execute time — master untouched.")
+        _notify_failed("landing list empty at execute — aborted")
         reset()
+        return False
+    if not_ready:
+        tas = {i: nodes.get(i, {}).get("ta") for i in landing}
+        if any(t not in (1, 2) for t in tas.values()):
+            # [reseed_retry] a seed vanished between the check and now
+            _lost_seed_retry(cur_epoch, nodes, tas)
+        else:
+            _rdlog_warn(f"consolidate hold: landing ta={tas} at execute time — waiting one more epoch")
         return False
 
     # ── Guard 2: snatch-window time budget ───────────────────────────────────

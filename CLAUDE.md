@@ -201,9 +201,23 @@ add any empty static master. Default = standby at 100% (old behaviour).
   rot_slave → target, rot_active 1k seed). If the wallet refuses `--batch`
   the batch degrades to the old one-tx-at-a-time path automatically.
 - Partial pre-seed: the consolidate proceeds with the seeded subset (shares
-  renormalised, TG warning). Lost seed (not ta 1/2) at consolidate → abort,
-  master untouched. Orphaned 1k seeds are cleaned up MANUALLY (no auto
-  cleanup by decision, 2026-10-19).
+  renormalised, TG warning).
+- **Lost seed → retry, not abort** (marker `[reseed_retry]`, 2026-10-21). The
+  fronting guard only sees epoch N; the 1k seed on prov[0] sits at fronting
+  position 0 through all of N+1 and an unstake there eats it (testnet
+  2026-10-20: master prov[1] lost 675k to an unstake, prov[0] seed gone,
+  prov[4]/[5] went active at 1k as orphans). Hop 1→0 is always exposed, hop
+  0→1 is shielded by the big prov[0]. Now `_lost_seed_retry`: the surviving
+  seeds (ta 1/2) are `stake-deactivate`d back to the pool (one batch), state
+  goes back to ARMED with `reseed_retries += 1`, and the normal pre-seed path
+  re-seeds every landing node after this window's rotation (reserve applies).
+  Master never touched; nothing big idles. After `RESEED_RETRIES=4` lost
+  seeds it gives up (survivors still deactivated, then reset). A survivor
+  whose deactivate fails is reported as an orphan (goes active at 1k) and
+  must be freed manually before `wants_preseed` seeds again. Deactivate and
+  re-seed of the same key in one window is NOT yet proven on the contract.
+- Orphaned active 1k seeds are cleaned up MANUALLY (liquidate, 2 blocks,
+  terminate; no auto cleanup by decision, 2026-10-19).
 - Batch C budget = `max(active headroom, recycled stake)` capped by the pool
   balance — never clamp below what was just liquidated (capacity-neutral).
 - Dry-run harness (stubs chain + wallet, 6 scenarios) was used during
@@ -240,7 +254,8 @@ no 5th node.
   cur_master_idx` (`_new_master_exposed_to_fronting`). Uses
   `fronting.is_unstake_target_this_epoch`.
 - **ta==1 no-master precondition:** never liquidate cur_master until new_master
-  is confirmed ta==1. Otherwise abort, master untouched, TG alert.
+  is confirmed ta==1. A landing node still ta==2 → hold one epoch; a landing
+  node with no stake → `[reseed_retry]` (see above), master untouched.
 - **Snatch-window timing:** `perform_consolidate` defers if `blk_left <=
   snatch_win + 10` (not enough room for the tx sequence before snatch).
 - **Capacity clamp:** `_stake_activate_clamped` clamps to active headroom + pool
@@ -303,10 +318,11 @@ master stake in the pool through snatch. `_recover_stranded_stake`:
 ## Known issues / open work
 
 1. **Single-window brittleness.** Redistribution depends on the consolidate hook
-   firing during exactly one epoch (ta==1). If that window is missed for any
-   reason, the whole cycle fails and needs manual cleanup (an orphaned 1k active
-   seed). Harden: detect the over-mature case and auto-liquidate the stranded
-   seed + reset; consider a wider catch than "exactly ta==1".
+   firing during exactly one epoch (ta==1). A LOST seed is handled by
+   `[reseed_retry]`; a MISSED window (seeds over-mature to active 1k because
+   the hook did not fire) still fails the cycle and needs manual cleanup.
+   Harden: detect the over-mature case and auto-liquidate the stranded seed +
+   reset; consider a wider catch than "exactly ta==1".
 2. **Rotation ↔ redistribute window contention.** Both run in the same epoch N+1
    window and share pool balance / capacity. Consolidate is ordered BEFORE the
    normal rotation body; verify on testnet they don't step on each other.
