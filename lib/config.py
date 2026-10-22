@@ -211,6 +211,8 @@ _CONFIG_DEFAULTS = {
     "gas_price":               1,
     "sweeper_enabled":         False,
     "sweeper_delay_blocks":    50,
+    "deposit_pause_pre_rotation_blocks": 0,      # [deposit_pre_rotation_pause] 0 = off
+    "redistribute_preseed_on_a2":        False,  # [redistribute_preseed_a2]
 }
 
 _cfg: dict       = {}

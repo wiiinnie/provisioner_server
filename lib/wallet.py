@@ -288,6 +288,24 @@ def _push_cmd_output(name: str, result: dict) -> None:
         if len(_cmd_log) > 200:
             del _cmd_log[:-200]
 
+MEMPOOL_RETRIES = 3
+
+def _is_mempool_conflict(result: dict) -> bool:
+    out = (result.get("stderr", "") + result.get("stdout", "")).lower()
+    return "spendid exists in the mempool" in out
+
+def _wait_next_block() -> None:
+    """Wait until the chain is one block further (the conflicting tx is then
+    executed and the wallet sees fresh notes); 15s sleep if heights are unknown."""
+    try:
+        from . import rues
+        h = rues._last_known_height
+        if h and rues.wait_for_block(h + 1, timeout=30):
+            return
+    except Exception:
+        pass
+    time.sleep(15)
+
 def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
                  gas_limit: int = 0) -> dict:
     """Run a command using the OPERATOR wallet (~/sozu_operator).
@@ -318,12 +336,25 @@ def operator_cmd(subcmd: str, timeout: int = 30, password: str = "",
     _use_rot_lock = any(_stripped.startswith(p) for p in ("pool ", "stake-info", "substrate "))
     _lock = _rotation_lock if _use_rot_lock else _wallet_lock
 
-    if _use_rot_lock or _stripped.startswith("batch"):
-        with tx_gate, _lock:
-            result = run_cmd(cmd, timeout=timeout)
-    else:
-        with _lock:
-            result = run_cmd(cmd, timeout=timeout)
+    # [mempool_retry] "spendId exists in the mempool" = another operator tx of
+    # ours (e.g. a deposit-race top-up) still spends the same note. The tx was
+    # rejected, not sent, so it is safe to wait one block and send it again
+    # (testnet epoch 2153: the rotation liquidate aborted on exactly this).
+    # Not for `batch …`: a refused propagate falls back to one tx at a time.
+    _retry_ok = _use_rot_lock and not _stripped.startswith("batch")
+    for _attempt in range(MEMPOOL_RETRIES + 1):
+        if _use_rot_lock or _stripped.startswith("batch"):
+            with tx_gate, _lock:
+                result = run_cmd(cmd, timeout=timeout)
+        else:
+            with _lock:
+                result = run_cmd(cmd, timeout=timeout)
+        if (result.get("ok") or not _retry_ok or _attempt == MEMPOOL_RETRIES
+                or not _is_mempool_conflict(result)):
+            break
+        _log(f"[wallet] {_stripped.split(' --', 1)[0]}: spendId already in the mempool — "
+             f"waiting one block, retry {_attempt + 1}/{MEMPOOL_RETRIES}")
+        _wait_next_block()
     result["cmd"] = log_cmd
     # Defence in depth: mask the password if the CLI echoes its argv back on
     # error, before the output is returned or pushed to the command panel.

@@ -253,6 +253,14 @@ def is_rotation_in_progress() -> bool:
         return _rotation_state["state"] == IN_PROGRESS
 
 
+def rotation_started_this_epoch(cur_epoch: int) -> bool:
+    """[deposit_pre_rotation_pause] True once this epoch's rotation window
+    has been entered (rotation running or done)."""
+    with _state_lock:
+        return (_rotation_state["last_rotation_epoch"] == cur_epoch
+                or _rotation_state["state"] == IN_PROGRESS)
+
+
 def is_rotation_enabled() -> bool:
     with _state_lock:
         return bool(_rotation_state["enabled"]) and _rotation_state["state"] != ERROR
@@ -1409,6 +1417,19 @@ def _run_rotation_a2(cur_epoch: int, smaller_idx: int, nodes: dict) -> None:
 
     _rlog_ok(f"─── A:2 recovery epoch {cur_epoch} complete ✓ ───")
     _rlog_info(f"next state: prov[{smaller_idx}] → ta=1 next epoch → healthy A:1 M:1")
+
+    # [redistribute_preseed_a2] Optional (default off): the A:2 recovery has
+    # no bulk allocation, so an ARMED pre-seed would otherwise lose the whole
+    # window. perform_preseed() checks pool + capacity itself and defers when
+    # the pool cannot fund the seeds.
+    if cfg("redistribute_preseed_on_a2"):
+        try:
+            from .redistribute import wants_preseed, perform_preseed
+            if wants_preseed(cur_epoch):
+                _rlog_step("redistribute: pre-seeding the landing node(s) after A:2 recovery")
+                perform_preseed(cur_epoch)
+        except Exception as _rd_err:
+            _rlog_warn(f"redistribute preseed hook (A:2) error: {_rd_err}")
     _set_state(ROTATING)
     _bump_epoch(cur_epoch)
 

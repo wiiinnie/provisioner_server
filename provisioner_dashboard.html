@@ -2332,6 +2332,10 @@ async function loadConfig() {
     if (swEl) swEl.checked = !!_cfg.sweeper_enabled
     const swDelayEl = document.getElementById('cfg-sweeper-delay-blocks')
     if (swDelayEl) swDelayEl.value = _cfg.sweeper_delay_blocks ?? 50
+    const dpEl = document.getElementById('cfg-deposit-pause-pre-rot')
+    if (dpEl) dpEl.value = _cfg.deposit_pause_pre_rotation_blocks ?? 0
+    const a2El = document.getElementById('cfg-rd-preseed-a2')
+    if (a2El) a2El.checked = !!_cfg.redistribute_preseed_on_a2
 
     // [notification_ui] load per-alert notification toggles (default true)
     const _notif = _cfg.notification_settings || {}
@@ -2377,6 +2381,8 @@ async function saveConfig() {
     gas_price:            parseInt(document.getElementById('cfg-gas-price').value || '1'),
     sweeper_enabled:      !!(document.getElementById('cfg-sweeper-enabled')?.checked),
     sweeper_delay_blocks: parseInt(document.getElementById('cfg-sweeper-delay-blocks')?.value || '50'),
+    deposit_pause_pre_rotation_blocks: parseInt(document.getElementById('cfg-deposit-pause-pre-rot')?.value || '0'),
+    redistribute_preseed_on_a2: !!(document.getElementById('cfg-rd-preseed-a2')?.checked),
     telegram_bot_token:   document.getElementById('cfg-telegram-token').value.trim(),
     // [notification_ui] per-alert notification toggles
     notification_settings: {
@@ -4294,6 +4300,15 @@ setInterval(() => {
 
       <label style="font-size:11px;color:var(--muted);">Sweeper Delay (blocks)<br><span style="font-size:10px;color:var(--dim)">wait this many blocks after candidate detection before allocating (default 50, ~500s on Dusk's 10s blocktime). Range 10–500.</span></label>
       <input class="modal-input" id="cfg-sweeper-delay-blocks" type="number" step="10" min="10" max="500" style="margin:0;" placeholder="50">
+
+      <label style="font-size:11px;color:var(--muted);">Deposit Pause before Rotation (blocks)<br><span style="font-size:10px;color:var(--dim)">hold the deposit race this many blocks before the rotation window until the rotation has started — avoids mempool collisions with the rotation liquidate (default 0 = off). Range 0–200.</span></label>
+      <input class="modal-input" id="cfg-deposit-pause-pre-rot" type="number" step="1" min="0" max="200" style="margin:0;" placeholder="0">
+
+      <label style="font-size:11px;color:var(--muted);">Pre-seed on A:2 Recovery<br><span style="font-size:10px;color:var(--dim)">an armed redistribution also pre-seeds after an A:2 recovery (needs the seeds in the pool; default off)</span></label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;">
+        <input type="checkbox" id="cfg-rd-preseed-a2" style="width:14px;height:14px;accent-color:var(--teal);">
+        <span style="font-size:11px;color:var(--dim);">enable</span>
+      </label>
     </div>
 
     <div id="cfg-status" style="font-size:11px;color:var(--green);min-height:18px;margin-top:10px;"></div>

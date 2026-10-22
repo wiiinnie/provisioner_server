@@ -215,6 +215,31 @@ def _handle_deposit(decoded: dict, block_height: int | None, label: str = "depos
     except Exception:
         pass
 
+    # [deposit_pre_rotation_pause] Optional (0 = off): hold the race from
+    # `deposit_pause_pre_rotation_blocks` blocks before the rotation window
+    # until this epoch's rotation has started. A top-up still in the mempool
+    # when the rotation liquidates collides on the spendId (testnet 2153).
+    # The deposit stays in the pool for the rotation / sweeper.
+    _pre_blocks = int(cfg("deposit_pause_pre_rotation_blocks") or 0)
+    if _pre_blocks > 0 and block_height:
+        try:
+            from .rotation import rotation_started_this_epoch
+            _rot_win    = int(cfg("rotation_window") or 41)
+            _snatch_win = int(cfg("snatch_window")   or 11)
+            _blk_left   = EPOCH_BLOCKS - (block_height % EPOCH_BLOCKS)
+            _cur_epoch  = block_height // EPOCH_BLOCKS + 1
+            if (_snatch_win < _blk_left <= _rot_win + _pre_blocks
+                    and not rotation_started_this_epoch(_cur_epoch)):
+                _log(f"[events] deposit race held — {_blk_left} blocks left, rotation not started yet "
+                     f"(deposit_pause_pre_rotation_blocks={_pre_blocks})")
+                _dlog({"type":"deposit_skipped", "step":0,
+                       "msg":f"⏸ {label} {amount_dusk:,.4f} DUSK held before rotation "
+                             f"(blk_left={_blk_left}) — stays in pool",
+                       "amount":amount_dusk, "window":_current_window(block_height), "ok":False})
+                return
+        except Exception as _pe:
+            _log(f"[events] pre-rotation pause check failed: {_pe} — racing")
+
     # [deposit_race_pause] pause check
     # Manual pause toggle from dashboard. When set, deposits are logged
     # and skipped; W/L counters are NOT updated. Resume toggles back.

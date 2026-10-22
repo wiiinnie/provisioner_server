@@ -248,9 +248,9 @@ def set_config():
     _prov_addr_keys = tuple(f"prov_{i}_address" for i in range(MAX_NODE_COUNT))
     int_keys   = ("network_id","rotation_window","snatch_window","backfill_blocks",
                   "master_idx","gas_limit","gas_price","node_count",) + _node_port_keys + (
-                  "sweeper_delay_blocks",
+                  "sweeper_delay_blocks", "deposit_pause_pre_rotation_blocks",
                   "rues_log_retention_hours")  # [config_whitelist_fix] [log24h]
-    bool_keys  = ("sweeper_enabled", "deposit_race_paused",)  # [deposit_race_pause] [config_whitelist_fix]
+    bool_keys  = ("sweeper_enabled", "deposit_race_paused", "redistribute_preseed_on_a2",)  # [deposit_race_pause] [config_whitelist_fix]
     float_keys = ("min_deposit_dusk","snatch_min_deposit_dusk","master_threshold_pct", "locked_max_pct",
                   "master_alert_threshold_pct","rotation_floor_pct")  # [config_whitelist_fix]
     str_keys   = ("contract_address","stake_contract_id","operator_address",) + _prov_addr_keys + _node_log_keys + (
@@ -288,6 +288,13 @@ def set_config():
             return jsonify({
                 "ok": False,
                 "error": f"sweeper_delay_blocks must be between 10 and 500 (got {v})"
+            }), 400
+    if "deposit_pause_pre_rotation_blocks" in current:
+        v = int(current["deposit_pause_pre_rotation_blocks"])
+        if v < 0 or v > 200:
+            return jsonify({
+                "ok": False,
+                "error": f"deposit_pause_pre_rotation_blocks must be between 0 and 200 (got {v})"
             }), 400
     for k in bool_keys:
         if k in data: current[k] = bool(data[k])
