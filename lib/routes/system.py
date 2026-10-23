@@ -323,6 +323,13 @@ def nodes_heights():
     return jsonify(get_heights())
 
 
+@bp.route("/api/nodes/consensus_keys", methods=["GET"])
+def nodes_consensus_keys():
+    """[consensus_key] BLS key prefix each node signs with, from its rusk log."""
+    from ..nodes import get_consensus_keys
+    return jsonify({"ok": True, "keys": get_consensus_keys()})
+
+
 @bp.route("/api/telegram/test", methods=["POST"])
 def telegram_test():
     try:

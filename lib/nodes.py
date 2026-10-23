@@ -10,7 +10,7 @@ import json
 import threading
 import time
 
-from .config import _log, RUSK_VERSION, NODE_INDICES, cfg, _default_ws_port
+from .config import _log, RUSK_VERSION, NODE_INDICES, cfg, _default_ws_port, _default_log_path
 
 _node_heights: dict = {i: None for i in NODE_INDICES}
 _node_heights_lock  = threading.Lock()
@@ -19,6 +19,56 @@ _node_heights_lock  = threading.Lock()
 def get_heights() -> dict:
     with _node_heights_lock:
         return dict(_node_heights)
+
+
+# [consensus_key] The BLS key a node really signs with, read from its rusk log
+# (consensus spans: main{round=… iter=… name=Validation pk="ua4Sc1pBUyBqbPmz"}).
+# rusk logs only a 16-char prefix; the dashboard compares it against the
+# configured prov_N_address to catch a mis-pasted address or a wrong key export.
+import re as _re
+_PK_RE            = _re.compile(r'main\{round=\d+ iter=\d+ name=\w+ pk="([^"]+)"\}')
+_PK_TAIL_BYTES    = 2 * 1024 * 1024
+_PK_CACHE_SECS    = 30
+_pk_cache: dict   = {}   # idx → {"pk", "round", "ts"}
+_pk_cache_lock    = threading.Lock()
+
+
+def _read_consensus_key(path: str):
+    """Last consensus pk in the tail of a rusk log, as (pk, round) or (None, None)."""
+    import os
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - _PK_TAIL_BYTES))
+        tail = f.read().decode("utf-8", "replace")
+    last = None
+    for last in _PK_RE.finditer(tail):
+        pass
+    if not last:
+        return None, None
+    rnd = _re.search(r"round=(\d+)", last.group(0))
+    return last.group(1), int(rnd.group(1)) if rnd else None
+
+
+def get_consensus_keys() -> dict:
+    """idx → {"pk", "round", "error"} for every node, cached for _PK_CACHE_SECS."""
+    now = time.time()
+    out = {}
+    for idx in NODE_INDICES:
+        with _pk_cache_lock:
+            hit = _pk_cache.get(idx)
+        if hit and now - hit["ts"] < _PK_CACHE_SECS:
+            out[idx] = {k: v for k, v in hit.items() if k != "ts"}
+            continue
+        path = cfg(f"node_{idx}_log") or _default_log_path(idx)
+        entry = {"pk": None, "round": None, "error": None}
+        try:
+            entry["pk"], entry["round"] = _read_consensus_key(path)
+        except Exception as e:
+            entry["error"] = f"{type(e).__name__}: {e}"
+        with _pk_cache_lock:
+            _pk_cache[idx] = {**entry, "ts": now}
+        out[idx] = entry
+    return out
 
 
 def _on_remote_block(height: int) -> None:

@@ -2028,6 +2028,7 @@ function renderNodeCard(idx, node, container, syncInfo, si) {
         <div class="prov-row"><span>Reward</span><span style="color:${rewardColor}">${reward}</span></div>
         <div class="prov-row"><span>Eligible from</span><span style="color:var(--dim)">${eligBlk}${eligEpoch}</span></div>
         ${faultsHtml}
+        <div class="prov-row"><span>Consensus key</span><span id="node${idx}-pk">${_pkCellHtml(idx)}</span></div>
         ${syncHtml}
       </div>
     </div>
@@ -2937,6 +2938,42 @@ async function _pollNodeHeights() {
 
 setInterval(_pollNodeHeights, 1000)
 _pollNodeHeights()
+
+// ── [consensus_key] BLS key each node really signs with ──────────────────────
+// From the node's rusk log (consensus spans carry a 16-char pk prefix), NOT
+// from config — so a mis-pasted prov_N_address or a wrong key export shows up
+// as a mismatch against the configured address.
+let _consensusKeys = {}   // idx → {pk, round, error}
+
+function _pkCellHtml(idx) {
+  const k = _consensusKeys[idx]
+  if (!k) return '<span style="color:var(--dim)">—</span>'
+  if (!k.pk) {
+    const why = k.error ? 'log unreadable' : 'no consensus line in log'
+    return `<span style="color:var(--dim)" title="${k.error || ''}">— ${why}</span>`
+  }
+  const addr = (_cfg && _cfg[`prov_${idx}_address`]) || ''
+  const ok = addr && addr.startsWith(k.pk)
+  const col = !addr ? 'var(--dim)' : ok ? 'var(--green)' : 'var(--red)'
+  const mark = !addr ? '' : ok ? ' ✓' : ' ✖ ≠ config'
+  const tip = `round ${k.round ?? '?'} · config: ${addr ? addr.slice(0, 16) + '…' : '(none)'}`
+  return `<span style="color:${col}" title="${tip}">${k.pk}…${mark}</span>`
+}
+
+async function _pollConsensusKeys() {
+  try {
+    const d = await fetch(`${API}/api/nodes/consensus_keys`).then(r => r.json())
+    if (!d || !d.ok) return
+    _consensusKeys = d.keys || {}
+    for (const i of _NODE_INDICES) {
+      const el = document.getElementById(`node${i}-pk`)
+      if (el) el.innerHTML = _pkCellHtml(i)
+    }
+  } catch(e) {}
+}
+
+setInterval(_pollConsensusKeys, 30000)
+_pollConsensusKeys()
 
 
 
