@@ -27,6 +27,9 @@ def get_heights() -> dict:
 # configured prov_N_address to catch a mis-pasted address or a wrong key export.
 import re as _re
 _PK_RE            = _re.compile(r'main\{round=\d+ iter=\d+ name=\w+ pk="([^"]+)"\}')
+# rusk writes its log with tracing's ANSI styling (bold span names, italic
+# field names, dimmed "="), invisible in `tail -f` but it breaks the match.
+_ANSI_RE          = _re.compile(r'\x1b\[[0-9;]*m')
 _PK_TAIL_BYTES    = 2 * 1024 * 1024
 _PK_CACHE_SECS    = 30
 _pk_cache: dict   = {}   # idx → {"pk", "round", "ts"}
@@ -39,7 +42,7 @@ def _read_consensus_key(path: str):
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         f.seek(max(0, f.tell() - _PK_TAIL_BYTES))
-        tail = f.read().decode("utf-8", "replace")
+        tail = _ANSI_RE.sub("", f.read().decode("utf-8", "replace"))
     last = None
     for last in _PK_RE.finditer(tail):
         pass
